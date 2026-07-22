@@ -1,0 +1,16 @@
+{
+  "_disclaimer": "SYNTHETIC fixture hand-authored to mirror the real shape of a YouTube json3 timed-text response for an AUTO-GENERATED (asr) track, including rolling-caption duplication, zero-duration positioning events, and malformed events. This is NOT a live capture. It exists only to unit-test normalize.ts offline, since this sandbox cannot reach youtube.com. Real fixtures must be produced by loading the extension in Chrome and using 'Download JSON Fixture'.",
+  "wireMagic": "pb3",
+  "events": [
+    { "tStartMs": 0, "dDurationMs": 2000, "wWinId": 1 },
+    { "tStartMs": 80, "dDurationMs": 3200, "wWinId": 1, "segs": [{ "utf8": "so today" }] },
+    { "tStartMs": 1280, "dDurationMs": 3000, "wWinId": 1, "segs": [{ "utf8": "so today we're going" }] },
+    { "tStartMs": 2400, "dDurationMs": 2900, "wWinId": 1, "segs": [{ "utf8": "we're going to talk about" }] },
+    { "tStartMs": 3500, "dDurationMs": 0, "wWinId": 1, "segs": [{ "utf8": "to talk about caption" }] },
+    { "tStartMs": 3600, "dDurationMs": 2600, "wWinId": 1, "segs": [{ "utf8": "to talk about caption\nextraction" }] },
+    { "tStartMs": 5100, "dDurationMs": 2000, "wWinId": 1 },
+    { "dDurationMs": 2200, "wWinId": 1, "segs": [{ "utf8": "extraction and normalization" }] },
+    { "tStartMs": 6200, "dDurationMs": -50, "wWinId": 1, "segs": [{ "utf8": "extraction and normalization" }] },
+    { "tStartMs": 6900, "dDurationMs": 2400, "wWinId": 1, "segs": [{ "utf8": "and normalization of cues" }] }
+  ]
+}

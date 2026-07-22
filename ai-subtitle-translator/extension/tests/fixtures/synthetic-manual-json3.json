@@ -1,0 +1,13 @@
+{
+  "_disclaimer": "SYNTHETIC fixture hand-authored to mirror the real shape of a YouTube json3 timed-text response for a MANUALLY captioned track. This is NOT a live capture. It exists only to unit-test normalize.ts offline, since this sandbox cannot reach youtube.com. Real fixtures must be produced by loading the extension in Chrome and using 'Download JSON Fixture'.",
+  "wireMagic": "pb3",
+  "events": [
+    { "tStartMs": 0, "dDurationMs": 1000, "wWinId": 1 },
+    { "tStartMs": 40, "dDurationMs": 2960, "wWinId": 1, "segs": [{ "utf8": "Welcome back to the channel," }] },
+    { "tStartMs": 3000, "dDurationMs": 2500, "wWinId": 1, "segs": [{ "utf8": "today we're going to talk about" }] },
+    { "tStartMs": 5500, "dDurationMs": 2200, "wWinId": 1, "segs": [{ "utf8": "structured caption extraction." }] },
+    { "tStartMs": 7700, "dDurationMs": 1800, "wWinId": 1, "segs": [{ "utf8": "It's a small but important step." }] },
+    { "tStartMs": 9500, "dDurationMs": 400, "wWinId": 1, "segs": [{ "utf8": " " }] },
+    { "tStartMs": 9900, "dDurationMs": 2600, "wWinId": 1, "segs": [{ "utf8": "Let's dive right in." }] }
+  ]
+}

@@ -155,6 +155,18 @@ The experiment must record the actual mechanism that worked in the current deskt
 
 **Exit criterion:** Both caption types produce ordered cues with usable timing and no unexplained missing ranges. If this does not pass, stop before building the full extension or backend.
 
+**Phase 0 result (owner-validated 2026-07-22):** PASS. The primary
+main-world experiment (candidate strategy #1 below) was implemented in
+`extension/`, unit-tested against synthetic json3 fixtures, and confirmed
+working by the project owner's real two-video capture in their own Chrome.
+No fallback strategy was required. The validated method is now the
+**confirmed** extraction approach for Phase 3 (see
+`docs/PHASE0_EXPERIMENT_NOTES.md` for details and the still-pending raw
+fixture commit). Remaining assumption: the undocumented
+`ytInitialPlayerResponse` / `getPlayerResponse()` shapes and the
+`&fmt=json3` endpoint can change without notice, so this logic stays behind
+the narrow extractor interface per NFR-010.
+
 ### Expected cue output
 
 | **Field** | **Type** | **Meaning** |
@@ -631,7 +643,7 @@ This initial log captures current implementation choices. Status must be updated
 | FastAPI | Provides a small typed Python HTTP layer around the translation engine. | Current decision |
 | SQLite | Sufficient durable storage for one user, cache reuse, and restart recovery. | Current decision |
 | TypeScript extension | Improves contract and lifecycle safety in a changing browser integration. | Current decision |
-| Browser-side caption capture | Uses the active YouTube session and avoids backend scraping or cookie handling. | Boundary decided; method experimental |
+| Browser-side caption capture | Uses the active YouTube session and avoids backend scraping or cookie handling. | Boundary decided; method validated (Phase 0, owner-validated 2026-07-22): main-world json3 fetch. |
 | TextTrack synchronization | Delegates cue activation to the media clock while allowing a custom Persian overlay. | Current decision; validate in Phase 3 |
 | Polling instead of WebSockets | Simple and adequate for one local client and incremental results. | Current decision |
 | No React initially | The MVP UI is too small to justify framework complexity. | Current decision |

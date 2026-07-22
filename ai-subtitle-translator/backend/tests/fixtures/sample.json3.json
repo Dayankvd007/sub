@@ -1,0 +1,11 @@
+{
+  "_disclaimer": "SYNTHETIC json3 sample for Phase 1 tests. Not a live capture.",
+  "wireMagic": "pb3",
+  "events": [
+    { "tStartMs": 0, "dDurationMs": 1000, "wWinId": 1 },
+    { "tStartMs": 40, "dDurationMs": 2960, "segs": [{ "utf8": "Welcome back to the channel," }] },
+    { "tStartMs": 3000, "dDurationMs": 2500, "segs": [{ "utf8": "today we're going to talk about" }] },
+    { "tStartMs": 5500, "dDurationMs": 2200, "segs": [{ "utf8": "structured caption extraction." }] },
+    { "tStartMs": 9900, "dDurationMs": 2600, "segs": [{ "utf8": "Let's dive right in." }] }
+  ]
+}

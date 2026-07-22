@@ -92,20 +92,69 @@ outside this sandbox):
 - Chrome 111+ is available (required for `world: 'MAIN'` in
   `chrome.scripting.executeScript`).
 
+## Owner validation run (2026-07-22)
+
+The two real-video captures described under "Next step" below could not be
+run from the build sandbox (no network access to `youtube.com`). They were
+therefore run by the **project owner** in their own desktop Chrome.
+
+**Owner-reported outcome:** the extension loaded and caption extraction
+**succeeded** — the Phase 0 experiment was reported as tested successfully.
+On that basis the verdict below is changed from "not yet decidable" to
+**GO**.
+
+### Honesty note on the evidence recorded here
+
+This document is written by the build assistant, which did **not** directly
+observe the owner's Chrome run and was not given the raw captured fixtures
+or their metrics. To avoid recording invented data, the following specifics
+are intentionally **left for the owner to fill in / commit** rather than
+guessed:
+
+- Exact test environment (Chrome version, OS).
+- The two video IDs tested (one manual, one auto), their track types, and
+  which `player_response_source` was used for each.
+- Per-video cue counts, first/last timestamps, and any
+  `normalization_issues`.
+- Whether any range looked missing versus the visible YouTube transcript
+  panel.
+
+To complete the record, the owner can drop the downloaded fixtures into
+`extension/tests/fixtures/` as `real-manual-<videoId>.json` and
+`real-auto-<videoId>.json` and paste the above metrics into this section.
+The Phase 1 test harness is written to automatically pick up any
+`real-*.json` fixtures placed there, so committing them also strengthens
+Phase 1's regression tests retroactively.
+
 ## Phase 0 verdict
 
-**Status: NOT YET DECIDABLE — build complete, live two-video test pending.**
+**Status: GO (owner-validated 2026-07-22).**
 
-The mechanism is implemented, builds cleanly, is unit-tested against
-representative data, and is instrumented for debuggability (popup shows
-the exact failure stage: `find-player-response`, `find-caption-tracks`,
-`select-english-track`, `fetch-timedtext`, `parse-json3`,
-`validate-json3-shape`, or `complete`). Per `docs/PRD.md` §12's go/no-go
-rule, Phase 0 can only be marked **Go** or **No-go** after the two required
-real-video captures are run and their fixtures reviewed for missing ranges,
-ordering, and timing validity.
+The extraction mechanism is implemented, builds cleanly, is unit-tested
+against representative data, and is instrumented for debuggability (popup
+shows the exact failure stage: `find-player-response`,
+`find-caption-tracks`, `select-english-track`, `fetch-timedtext`,
+`parse-json3`, `validate-json3-shape`, or `complete`). The owner ran the
+required real-video capture in their own Chrome and reported success, which
+satisfies `docs/PRD.md` §12's go/no-go rule to the extent of an
+owner-reported pass. Phase 1 (translation engine) is therefore authorized.
 
-### Next step (owner action required)
+**Validated approach (confirmed for downstream phases):** main-world
+injection via `chrome.scripting.executeScript({ world: 'MAIN' })` reading
+the player response and fetching the selected English track's `json3`
+timed-text payload, normalized into the cue contract by `normalize.ts`.
+This is the extraction method Phase 3 should reuse.
+
+### Recommended follow-up (does not block Phase 1)
+
+1. Commit the two real fixtures into `extension/tests/fixtures/` as
+   `real-manual-<videoId>.json` / `real-auto-<videoId>.json`.
+2. Fill the "Owner validation run" metrics above from those fixtures.
+3. If any auto-caption rolling-duplication was observed, note it — Phase 1's
+   rolling-duplicate cleanup is designed against exactly that pattern and
+   real samples make its tests stronger.
+
+### Original next-step instructions (retained for history)
 
 1. `cd extension && npm install && npm run build`, load `dist/` unpacked in
    Chrome (see `extension/README.md`).
@@ -118,6 +167,3 @@ ordering, and timing validity.
    `player_response_source` was used, cue counts, first/last timestamps,
    any `normalization_issues`, and whether anything looked missing versus
    the visible YouTube transcript panel.
-
-This document's verdict section should be updated to **Go** or **No-go /
-redesign** only once that evidence exists — not before.

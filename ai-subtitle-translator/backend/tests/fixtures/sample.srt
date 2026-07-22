@@ -1,0 +1,19 @@
+1
+00:00:00,040 --> 00:00:03,000
+Welcome back to the channel,
+
+2
+00:00:03,000 --> 00:00:05,500
+today we're going to talk about
+
+3
+00:00:05,500 --> 00:00:07,700
+<i>structured</i> caption extraction.
+
+4
+00:00:07,700 --> 00:00:09,500
+[Music]
+
+5
+00:00:09,900 --> 00:00:12,500
+Let's dive right in.

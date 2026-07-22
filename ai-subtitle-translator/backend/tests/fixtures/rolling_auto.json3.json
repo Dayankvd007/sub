@@ -1,0 +1,11 @@
+{
+  "_disclaimer": "SYNTHETIC auto-caption (asr) json3 sample with rolling duplication for Phase 1 dedup tests. Not a live capture.",
+  "wireMagic": "pb3",
+  "events": [
+    { "tStartMs": 0, "dDurationMs": 1600, "segs": [{ "utf8": "so today" }] },
+    { "tStartMs": 1200, "dDurationMs": 1600, "segs": [{ "utf8": "so today we're going" }] },
+    { "tStartMs": 2400, "dDurationMs": 1600, "segs": [{ "utf8": "so today we're going to talk" }] },
+    { "tStartMs": 3600, "dDurationMs": 1600, "segs": [{ "utf8": "we're going to talk about captions" }] },
+    { "tStartMs": 5200, "dDurationMs": 1600, "segs": [{ "utf8": "about captions and translation" }] }
+  ]
+}

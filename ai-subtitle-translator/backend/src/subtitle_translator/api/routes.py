@@ -87,6 +87,7 @@ def translate(
     return TranslateResponse(
         video_id=outcome.video_id,
         status=outcome.status,
+        cache_hit=outcome.cache_hit,
         prompt_version=outcome.prompt_version,
         provider=outcome.provider,
         model=outcome.model,

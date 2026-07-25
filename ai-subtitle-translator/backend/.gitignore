@@ -5,3 +5,7 @@ __pycache__/
 build/
 dist/
 .venv/
+# Local SQLite cache, if SUBTITLE_DB_PATH ever points inside the repo.
+*.db
+*.sqlite
+*.sqlite3

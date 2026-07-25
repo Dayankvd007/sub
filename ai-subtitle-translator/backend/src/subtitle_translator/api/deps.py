@@ -15,10 +15,12 @@ from ..providers import (
     ProviderError,
     TranslationProvider,
 )
+from ..repository import Repository
 from ..service import TranslationService
 from .settings import Settings, load_settings
 
 _settings: Settings | None = None
+_repository: Repository | None = None
 
 
 def get_settings() -> Settings:
@@ -30,9 +32,25 @@ def get_settings() -> Settings:
 
 
 def reset_settings_cache() -> None:
-    """Test hook: force the next get_settings() call to re-read the env."""
-    global _settings
+    """Test hook: force the next get_settings()/get_repository() call to rebuild."""
+    global _settings, _repository
     _settings = None
+    _repository = None
+
+
+def get_repository() -> Repository | None:
+    """Process-wide repository, or None when caching is disabled.
+
+    The Repository holds no connection — each method opens its own — so reusing
+    one instance across threads is safe.
+    """
+    global _repository
+    settings = get_settings()
+    if not settings.cache_enabled:
+        return None
+    if _repository is None:
+        _repository = Repository(settings.db_path)
+    return _repository
 
 
 def build_provider(provider_name: str, model: str | None) -> TranslationProvider:
@@ -59,4 +77,5 @@ def get_service() -> TranslationService:
         target_size=settings.target_size,
         max_size=settings.max_size,
         context=settings.context,
+        repository=get_repository(),
     )

@@ -176,7 +176,30 @@ class OpenRouterProvider(TranslationProvider):
         self.max_tokens = max_tokens
         self.timeout = timeout
         # Populated after each call so the caller can report approximate cost.
+        # NOTE: this is the MOST RECENT call only. A run translates one window
+        # per call, so reporting this as a run total under-reports by roughly the
+        # window count. Use `usage_totals` for per-run figures.
         self.last_usage: dict | None = None
+        # Accumulated across every call this instance makes.
+        self.usage_totals: dict = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cost": 0.0,
+            "calls": 0,
+        }
+
+    def _accumulate_usage(self, usage: dict | None) -> None:
+        """Add one call's usage to the running totals, tolerating missing fields."""
+        self.usage_totals["calls"] += 1
+        if not usage:
+            return
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                self.usage_totals[key] += int(value)
+        cost = usage.get("cost")
+        if isinstance(cost, (int, float)):
+            self.usage_totals["cost"] += float(cost)
 
     def translate(self, request: TranslationRequest) -> str:  # pragma: no cover - online only
         payload = {
@@ -206,7 +229,9 @@ class OpenRouterProvider(TranslationProvider):
         except urllib.error.URLError as exc:
             raise ProviderError(f"OpenRouter request failed: {exc.reason}") from exc
 
-        self.last_usage = body.get("usage")
+        usage = body.get("usage")
+        self.last_usage = usage
+        self._accumulate_usage(usage)
 
         choices = body.get("choices") or []
         if not choices:

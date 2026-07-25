@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..db import default_db_path
 from ..envfile import load_dotenv
 
 # Phase 1 exit-gate selection (docs/PHASE1_TRANSLATION_ENGINE_NOTES.md).
@@ -70,6 +71,10 @@ class Settings:
     target_size: int = 50
     max_size: int = 70
     context: int = 2
+    # Phase 2b-1: local persistence + cache. The database lives in a per-user
+    # data directory, never inside the repository.
+    db_path: str = ""
+    cache_enabled: bool = True
 
     @property
     def api_key_present(self) -> bool:
@@ -97,4 +102,6 @@ def load_settings() -> Settings:
         max_cues=_env_int("MAX_CUES", DEFAULT_MAX_CUES),
         max_body_bytes=_env_int("MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES),
         allow_client_model_override=_env_bool("ALLOW_CLIENT_MODEL_OVERRIDE", False),
+        db_path=os.environ.get("SUBTITLE_DB_PATH") or str(default_db_path()),
+        cache_enabled=_env_bool("SUBTITLE_CACHE_ENABLED", True),
     )

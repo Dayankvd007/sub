@@ -105,15 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     if s.failed_indices:
         print(f"[stats] FAILED cue indexes: {s.failed_indices}", file=sys.stderr)
 
-    usage = getattr(provider, "last_usage", None)
-    if usage:
-        cost = usage.get("cost")
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
+    # Totals across every window in this run. `last_usage` holds only the most
+    # recent call, so reporting that as a run total under-reports by roughly the
+    # window count.
+    totals = getattr(provider, "usage_totals", None)
+    if totals and totals.get("calls"):
         print(
-            f"[usage] model={config.model} prompt_tokens={prompt_tokens} "
-            f"completion_tokens={completion_tokens} "
-            f"last_call_cost_usd={cost if cost is not None else 'n/a'}",
+            f"[usage] model={config.model} calls={totals['calls']} "
+            f"prompt_tokens={totals['prompt_tokens']} "
+            f"completion_tokens={totals['completion_tokens']} "
+            f"total_cost_usd={totals['cost']:.6f}",
             file=sys.stderr,
         )
 

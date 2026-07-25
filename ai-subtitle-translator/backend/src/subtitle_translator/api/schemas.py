@@ -70,6 +70,8 @@ class UsageOut(BaseModel):
 class TranslateResponse(BaseModel):
     video_id: str
     status: str  # "completed" | "partial"
+    # True when the result was served from the local cache with no provider call.
+    cache_hit: bool = False
     prompt_version: str
     provider: str
     model: str

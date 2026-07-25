@@ -37,8 +37,12 @@ def make_settings(**overrides):
     return Settings(**defaults)
 
 
-def make_client(settings=None, provider_factory=None):
-    """Build a TestClient wired to MockProvider — offline, no key, no cost."""
+def make_client(settings=None, provider_factory=None, repository=None):
+    """Build a TestClient wired to MockProvider — offline, no key, no cost.
+
+    `repository` is None by default so the Phase 2a tests keep exercising the
+    uncached path; the cache tests pass a tmp_path-backed Repository.
+    """
     settings = settings or make_settings()
     app = create_app(settings)
 
@@ -46,6 +50,7 @@ def make_client(settings=None, provider_factory=None):
         provider_factory=provider_factory or (lambda: MockProvider()),
         provider_name=settings.provider,
         model=settings.model,
+        repository=repository,
     )
 
     app.dependency_overrides[get_settings] = lambda: settings

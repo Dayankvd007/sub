@@ -26,12 +26,14 @@ timing intact.
 ## Install
 
 The core engine and its tests have **no third-party dependencies** — they run
-offline with a built-in deterministic mock provider. The real online provider
-needs the Anthropic SDK:
+offline with a built-in deterministic mock provider. `--provider openrouter`
+needs no extra SDK (plain HTTP); `--provider anthropic` needs the Anthropic
+SDK:
 
 ```sh
 cd backend
-python -m pip install -e ".[anthropic,dev]"   # or just ".[dev]" for offline
+python -m pip install -e ".[dev]"             # mock + openrouter providers
+python -m pip install -e ".[anthropic,dev]"   # if also comparing against Anthropic
 ```
 
 ## Run
@@ -44,19 +46,33 @@ python -m subtitle_translator.cli tests/fixtures/rolling_auto.json3.json \
   --provider mock -o out.srt
 ```
 
-Real translation with the default model (`claude-sonnet-5`):
+Real translation via OpenRouter (currently the provider under evaluation for
+Phase 1 — see below):
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...
+export OPENROUTER_MODEL=google/gemini-3.1-flash-lite   # or pass --model
+python -m subtitle_translator.cli captions.srt --provider openrouter \
+  --title "My video" -o persian.srt
+```
+
+`OPENROUTER_API_KEY` and `OPENROUTER_MODEL` are read only from the local
+environment (or a local, gitignored `.env` file) — never hardcoded or bundled.
+
+Real translation via Anthropic with the default model (`claude-sonnet-5`):
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-python -m subtitle_translator.cli captions.srt --title "My video" -o persian.srt
+python -m subtitle_translator.cli captions.srt --provider anthropic \
+  --title "My video" -o persian.srt
 # or, after `pip install -e`:
-subtitle-translate captions.srt -o persian.srt
+subtitle-translate captions.srt --provider anthropic -o persian.srt
 ```
 
-Key flags: `--provider {anthropic,mock}`, `--model`, `--window-size`,
-`--max-window-size`, `--context`, `--title`, `--no-rtl-wrap`. Exit code is `0`
-on full success, `1` if any cue failed validation (reported on stderr), `2` for
-input/setup errors, `3` for a provider/transport failure.
+Key flags: `--provider {anthropic,openrouter,mock}`, `--model`,
+`--window-size`, `--max-window-size`, `--context`, `--title`, `--no-rtl-wrap`.
+Exit code is `0` on full success, `1` if any cue failed validation (reported on
+stderr), `2` for input/setup errors, `3` for a provider/transport failure.
 
 ## Test
 
@@ -71,12 +87,17 @@ including corrective-retry recovery and bounded split-on-failure.
 
 ## Provider / model choice
 
-Default provider **Anthropic**, default model **`claude-sonnet-5`**, chosen for
-strong Persian/multilingual quality and reliable structured JSON at moderate
-cost. The `providers.py` abstraction makes swapping the model or adding another
-provider a small, isolated change. The final model selection is the owner's
-Phase-1 experiment (roadmap P1-06 / P1-11) — see
-`../docs/PHASE1_TRANSLATION_ENGINE_NOTES.md`.
+Two real providers exist behind the same `TranslationProvider` contract:
+**Anthropic** (default model `claude-sonnet-5`) and **OpenRouter** (model set
+via `--model` or `OPENROUTER_MODEL`). An `OpenRouterProvider` run against a
+real SRT fixture and a real JSON3 fixture with `google/gemini-3.1-flash-lite`
+translated every expected cue with no retries, splits, or validation errors,
+at roughly $0.0007 combined cost — a clean structural result, but **not**
+Phase 1's quality exit gate. The `providers.py` abstraction makes swapping the
+model or adding another provider a small, isolated change. **Phase 1 is still
+in progress, not completed:** the final model selection is still pending the
+owner's manual review of a longer real YouTube capture (roadmap P1-06 / P1-11)
+— see `../docs/PHASE1_TRANSLATION_ENGINE_NOTES.md`.
 
 ## Not in this phase
 

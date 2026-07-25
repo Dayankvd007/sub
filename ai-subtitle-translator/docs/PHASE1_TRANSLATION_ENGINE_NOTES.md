@@ -35,7 +35,9 @@ Module map:
   (`PROMPT_VERSION = "v1"`); the runtime prompt is loaded from the Markdown spec
   so the two cannot drift.
 - `providers.py` — provider abstraction. `MockProvider` (deterministic, offline,
-  with fault modes) and `AnthropicProvider` (real, lazy-imports the SDK).
+  with fault modes), `AnthropicProvider` (real, lazy-imports the SDK), and
+  `OpenRouterProvider` (real, OpenAI-compatible chat-completions API; reads
+  `OPENROUTER_API_KEY`/`OPENROUTER_MODEL` from the local environment only).
 - `validation.py` — strict JSON parse + cue-coverage check. Fails visibly on
   missing / duplicate / unexpected / empty indexes with the exact offending set,
   and returns a targeted correction message for the retry.
@@ -78,6 +80,32 @@ choice.
 
 Credentials come only from `ANTHROPIC_API_KEY` via the SDK's default
 resolution — never hardcoded, never bundled.
+
+### OpenRouter provider (added, PR merged)
+
+`OpenRouterProvider` implements the same `TranslationProvider` contract against
+OpenRouter's OpenAI-compatible chat-completions API. Credentials come only from
+the local `OPENROUTER_API_KEY` environment variable (never hardcoded, never
+bundled); the model is read from `--model` or `OPENROUTER_MODEL`.
+
+A real end-to-end run was made with `--provider openrouter` and
+`google/gemini-3.1-flash-lite` against one real SRT fixture and one real JSON3
+fixture:
+
+- Both runs translated every expected cue.
+- Zero retries, zero splits, zero `failed_indices`, zero validation errors.
+- Combined cost for both runs was approximately $0.0007.
+- All 39 existing pytest tests still pass (offline, mock provider — unaffected
+  by the new provider).
+
+This confirms the provider abstraction and pipeline work correctly against a
+second real backend, and gives one clean structural data point for
+`google/gemini-3.1-flash-lite`. It is **not** the full P1-06 model comparison
+and **not** the P1-11 quality exit gate: those require a longer real YouTube
+capture and the owner's manual read of the Persian output (naturalness,
+fidelity, terminology, segmentation, comfort over long-form viewing). A second
+model is only worth comparing if this one turns out not to be good enough on
+that longer review.
 
 ## Prompt version
 
@@ -139,14 +167,19 @@ translation`.
 
 ## Limitations / what is NOT yet done
 
-- **No live-model quality review has been run.** This build sandbox has no
-  Anthropic API key and cannot reach the provider, so a real Persian
-  translation of a full educational video — the substance of the Phase-1 exit
-  gate (roadmap P1-11) — has **not** been produced or judged. The `anthropic`
-  provider code is written to the current SDK but is exercised only by the
-  owner running it with a key.
-- **No model comparison has been run** (P1-06). Only a default was chosen with
-  documented reasoning; Haiku 4.5 / Gemini Flash comparison is pending.
+- **No long-form, full-video quality review has been run yet.** A real SRT
+  fixture and a real JSON3 fixture were translated successfully via
+  `OpenRouterProvider` with `google/gemini-3.1-flash-lite` (see above), but
+  that is a structural smoke test on fixtures, not the representative
+  full-length educational video required for the Phase-1 exit gate
+  (roadmap P1-11). The owner still needs to run a longer real YouTube
+  subtitle capture and manually judge naturalness, fidelity, terminology,
+  segmentation, and comfort for long-form viewing.
+- **The model comparison (P1-06) is not finished.** One real model
+  (`google/gemini-3.1-flash-lite` via OpenRouter) has clean structural results;
+  a second candidate (e.g. Claude Haiku 4.5 or another Gemini Flash variant)
+  should only be compared if this one is not good enough on the long-form
+  review, and the final model-selection decision still needs to be recorded.
 - **No real Phase-0 fixtures** are committed yet, so Phase-1 regression tests
   run against synthetic samples. The test suite will pick up real
   `extension/tests/fixtures/real-*.json` fixtures if/when the owner commits
@@ -157,22 +190,38 @@ translation`.
 
 ## Phase 1 verdict
 
-**Status: IMPLEMENTATION COMPLETE and offline-tested; quality exit gate
-PENDING the owner's live-model run.**
+**Status: PHASE 1 IN PROGRESS — NOT COMPLETED.**
 
-Per roadmap P1-11, Phase 1 can only be marked fully passed after the owner runs
-a complete representative educational video through the CLI with a real model
-and judges the Persian comfortable, with every expected cue present exactly
-once. The engine, validation, recovery, and SRT generation are done and
-verified offline; the quality judgment is the owner's and is not yet performed.
+The engine, validation, recovery, and SRT generation are implemented and
+tested (39 pytest tests). A real online provider now exists beyond Anthropic —
+`OpenRouterProvider`, merged — and has been proven against real fixtures: one
+real SRT fixture and one real JSON3 fixture both translated fully with
+`google/gemini-3.1-flash-lite`, zero retries/splits/failed indices/validation
+errors, ~$0.0007 combined cost. All 39 existing tests still pass.
+
+That is real evidence, but it is not the Phase-1 exit gate. Per roadmap P1-11,
+Phase 1 can only be marked fully passed once the owner runs a complete,
+representative, longer real YouTube subtitle capture through the CLI and
+manually judges the Persian as comfortable — naturalness, fidelity,
+terminology, segmentation, and long-form viewing comfort — with every expected
+cue present exactly once, and records the final model-selection decision.
+**None of that manual, long-form review has happened yet, so Phase 1 remains
+In Progress, not Completed.**
 
 ### Next step (owner action required)
 
-1. `cd backend && python -m pip install -e ".[anthropic,dev]"`.
-2. `export ANTHROPIC_API_KEY=...`.
-3. Run a representative caption file (ideally a real Phase-0 fixture):
-   `subtitle-translate <captions> --title "<video>" -o persian.srt`.
-4. Review the Persian for naturalness, fidelity, terminology, segmentation, and
-   structural integrity; optionally compare `--model claude-haiku-4-5` and a
-   Gemini Flash adapter for the P1-06 model decision.
-5. Record the outcome here and, if accepted, mark the Phase-1 exit gate passed.
+1. `cd backend && python -m pip install -e ".[dev]"` (no extra SDK needed for
+   `--provider openrouter`; use `".[anthropic,dev]"` only if comparing against
+   Anthropic).
+2. `export OPENROUTER_API_KEY=...` and optionally `export
+   OPENROUTER_MODEL=google/gemini-3.1-flash-lite`.
+3. Run a **longer, representative real YouTube subtitle capture** (not just a
+   short fixture) through the CLI:
+   `subtitle-translate <captions> --provider openrouter --title "<video>" -o persian.srt`.
+4. Manually review the Persian output for naturalness, fidelity, terminology,
+   segmentation, and comfort over long-form viewing.
+5. Only if `google/gemini-3.1-flash-lite` is not good enough on that review,
+   compare a second model (e.g. `--model claude-haiku-4-5` via
+   `--provider anthropic`, or another OpenRouter model).
+6. Record the final model-selection decision here and in
+   `docs/roadmap.md`, and only then mark the Phase-1 exit gate (P1-11) passed.

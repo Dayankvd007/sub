@@ -322,6 +322,8 @@ No model is permanently selected in v0.1. Phase 1 should compare current afforda
 
 **Decision gate:** Choose a model only after the project owner reviews side-by-side or blind outputs and accepts the Persian for long-form viewing.
 
+**Progress (still Phase 1, not yet at the decision gate):** the provider abstraction now has a second real implementation, `OpenRouterProvider`, alongside the existing `AnthropicProvider`; both read credentials only from the local environment. A real SRT fixture and a real JSON3 fixture were both translated successfully through `OpenRouterProvider` with `google/gemini-3.1-flash-lite` (every expected cue, no retries/splits/failures, ~$0.0007 combined cost), and all existing pytest tests still pass. This is a structural smoke test, not the owner's long-form quality review — the decision gate above is not yet reached, and Phase 1 remains in progress. See `docs/PHASE1_TRANSLATION_ENGINE_NOTES.md` for the full record.
+
 ### Prompt versioning
 
 - Assign every translation instruction set a stable prompt_version value.

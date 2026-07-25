@@ -5,17 +5,23 @@ A provider's only job is: given a system prompt, a user prompt, and the set of
 required cue indexes, return the raw text the model produced. Parsing lives in
 `validation.py` so it can be tested independently of any provider.
 
-Two providers ship:
+Providers that ship:
   * MockProvider    — deterministic, offline, no cost. Used by the whole test
                       suite and by `--provider mock`. Can simulate malformed
                       output to exercise the retry/split path.
-  * AnthropicProvider — the real online provider (lazy-imports the `anthropic`
+  * AnthropicProvider — real online provider (lazy-imports the `anthropic`
                       SDK so the offline path needs no third-party deps).
+  * OpenRouterProvider — real online provider talking to the OpenRouter
+                      chat-completions API over stdlib `urllib` (no extra
+                      dependency). Credentials come from OPENROUTER_API_KEY.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 
 
@@ -137,3 +143,75 @@ class AnthropicProvider(TranslationProvider):
         if not parts:
             raise ProviderError("Anthropic response contained no text block.")
         return "".join(parts)
+
+
+class OpenRouterProvider(TranslationProvider):
+    """Real provider using OpenRouter's OpenAI-compatible chat-completions API.
+
+    Credentials come from the OPENROUTER_API_KEY environment variable — never
+    hardcoded, never logged. Uses stdlib `urllib` instead of an SDK so the
+    offline path still needs no third-party dependency. Requests
+    `usage.include` so the response carries token counts and OpenRouter's own
+    cost estimate, which the caller can surface for reporting.
+    """
+
+    name = "openrouter"
+
+    BASE_URL = "https://openrouter.ai/api/v1"
+
+    def __init__(self, model: str | None = None, *, max_tokens: int = 8000, timeout: float = 120.0):
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ProviderError(
+                "OPENROUTER_API_KEY environment variable is not set. "
+                "Add it to your local .env or export it before running."
+            )
+        resolved_model = model or os.environ.get("OPENROUTER_MODEL")
+        if not resolved_model:
+            raise ProviderError(
+                "No model specified for the openrouter provider. Pass --model or set OPENROUTER_MODEL."
+            )
+        self._api_key = api_key
+        self.model = resolved_model
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        # Populated after each call so the caller can report approximate cost.
+        self.last_usage: dict | None = None
+
+    def translate(self, request: TranslationRequest) -> str:  # pragma: no cover - online only
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user", "content": request.user_prompt},
+            ],
+            "usage": {"include": True},
+        }
+        http_request = urllib.request.Request(
+            f"{self.BASE_URL}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(http_request, timeout=self.timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ProviderError(f"OpenRouter API error {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ProviderError(f"OpenRouter request failed: {exc.reason}") from exc
+
+        self.last_usage = body.get("usage")
+
+        choices = body.get("choices") or []
+        if not choices:
+            raise ProviderError("OpenRouter response contained no choices.")
+        content = choices[0].get("message", {}).get("content")
+        if not content:
+            raise ProviderError("OpenRouter response contained no content.")
+        return content

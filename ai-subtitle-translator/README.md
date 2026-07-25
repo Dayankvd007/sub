@@ -6,8 +6,9 @@ Goal:
 Watch English YouTube videos with natural Persian subtitles inside YouTube.
 
 Current phase:
-Phase 2b-2 — Jobs and Progressive Delivery (Completed 2026-07-25). The backend
-is complete. Next: Phase 3 — Chrome extension integration.
+Phase 2b-2 — Jobs and Progressive Delivery (Completed and merged 2026-07-25).
+**The backend is complete.** Next: Phase 3 — Chrome extension integration,
+which is **Not Started**.
 
 - **Phase 0 — Caption Extraction** lives in `extension/`; see
   `extension/README.md` and `docs/PHASE0_EXPERIMENT_NOTES.md`. Verdict: GO
@@ -34,14 +35,25 @@ is complete. Next: Phase 3 — Chrome extension integration.
   stored translation with **no provider call**. The database lives in a
   per-user data directory (`SUBTITLE_DB_PATH`), never inside the repository.
 - **Phase 2b-2 — Jobs and Progressive Delivery** adds `POST /jobs` and
-  `GET /jobs/{id}`: a single background worker thread translates one video at a
-  time and commits **every translation window to SQLite as it finishes**, so
-  the extension can poll for validated Persian cues while the rest is still
-  being translated, and a crash loses at most the window in flight. SQLite is
-  the durable queue — on startup the worker re-queues anything left unfinished
-  and resumes it without re-translating a single completed cue. 153 tests pass
-  with the `[api]` extra; 112 pass and 4 skip without it, so the engine keeps
-  zero required dependencies.
+  `GET /jobs/{id}`: a single sequential background worker thread translates one
+  video at a time and commits **every translation window to SQLite as it
+  finishes**, so the extension can poll for validated Persian cues (cursor
+  `after_cue_index`) while the rest is still being translated, and a crash loses
+  at most the window in flight. SQLite is the durable queue of record — the
+  in-memory queue is only a doorbell, and on startup the worker re-queues
+  anything left unfinished and resumes it **without re-translating a single
+  completed cue**. Job creation is idempotent through the Phase 2b-1 cache
+  identity, so a completed video returns `cache_hit` with every cue inline and
+  no provider call, and `POST /translate` returns `409 job_in_progress` rather
+  than clobbering a running job. 153 tests pass with the `[api]` extra; 112 pass
+  and 4 skip without it, so the engine keeps zero required dependencies. Real
+  uvicorn evidence covers progressive polling and a `SIGKILL` restart recovery —
+  see `docs/PHASE2B2_JOBS_NOTES.md`.
+
+  One accepted trade-off is worth knowing before Phase 3: on resume the worker
+  re-windows the remaining cues rather than replaying the original layout, so
+  resumed window boundaries and context may differ from the first run. That is
+  what makes a resume cost zero duplicate provider calls.
 
 Quick start for the local API:
 

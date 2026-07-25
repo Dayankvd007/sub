@@ -39,6 +39,28 @@ SQLite Cache
 Persian Subtitle Rendering
 ```
 
+### Implemented flow as of Phase 2a
+
+The backend half of the diagram above now exists, minus persistence. The
+concrete call chain is:
+
+```text
+Chrome Extension
+↓  POST /translate  (normalized cues, localhost, CORS allowlist)
+API routes            (subtitle_translator/api/routes.py)
+↓
+TranslationService    (subtitle_translator/service.py — no web framework)
+↓
+pipeline.translate_cues   (Phase 1 engine, unchanged)
+↓
+Provider abstraction      (TranslationProvider)
+↓
+OpenRouter API
+```
+
+The SQLite cache, job system, and polling are Phase 2b and are not yet built;
+`POST /translate` runs the whole video synchronously in one request.
+
 ### Main components
 
 - **YouTube browser session —** provides the current video, caption-track context, playback clock, and player lifecycle.
@@ -104,7 +126,8 @@ The content script should treat every main-world message and every backend respo
 
 ### Other runtime components
 
-- **FastAPI application —** exposes the small local API and coordinates job lifecycle.
+- **FastAPI application —** exposes the small local API and coordinates job lifecycle. *(Phase 2a: implemented as `api/app.py` + `api/routes.py`; job lifecycle is Phase 2b.)*
+- **Translation service layer —** one framework-free class between the API and the engine, so the validated pipeline stays reusable from the CLI and testable without FastAPI. *(Phase 2a: `service.py`.)*
 - **Translation services —** implement cleaning, context windows, prompt construction, provider calls, and response repair.
 - **SQLite repository —** provides transactional persistence and cache lookup.
 - **AI provider adapter —** isolates provider-specific request and response handling behind one internal contract.
@@ -608,6 +631,38 @@ via OpenRouter — revisitable later if evidence warrants a change. See
 
 **Exit criteria:** A full fixture job completes through the API; a process restart preserves completed cues; a repeated identical job produces a cache hit without a model call; invalid output never reaches the client.
 
+Phase 2 is delivered in two stages so the HTTP contract can be proven before
+storage design is committed.
+
+#### Phase 2a — API Foundation (completed 2026-07-25)
+
+`subtitle-api`: a localhost FastAPI service over the unchanged Phase 1 engine.
+
+- `GET /health` — status, version, prompt version, provider, model, and whether
+  credentials are configured. Never the key itself.
+- `POST /translate` — accepts the extension's normalized cues, runs the full
+  pipeline synchronously, and returns validated Persian cues, stats, optional
+  SRT, and usage. Errors are typed `{error_code, message}`.
+- `TranslationService` between the API and the engine; Pydantic contracts;
+  environment-based settings; explicit CORS allowlist; `MAX_CUES` and
+  `MAX_BODY_BYTES` caps; sanitized provider errors; 127.0.0.1 binding.
+
+**Evidence:** 66 tests pass with the `[api]` extra (39 pre-existing + 27 new);
+47 pass and 2 skip without it, so the engine keeps zero required dependencies.
+A real uvicorn run returned a valid Persian SRT and usage stats.
+
+**Contract note for Phase 3:** client `cue_index` values are preserved exactly
+and echoed back — the extension owns cue identity. The response may omit
+indexes (non-speech cues are never translated; failures are reported in
+`failed_indices`), so the renderer must treat gaps as "no subtitle".
+
+#### Phase 2b — Persistence and Jobs (not started)
+
+SQLite videos/cues tables, cache identity and reuse, the job system
+(`POST /jobs`, `GET /jobs/{id}`), background processing, restart recovery, and
+the polling contract. The Phase 2a `status` field is already job-shaped
+(`completed` / `partial`) so these can be added without breaking the extension.
+
 ### Phase 3 — Chrome Extension
 
 **Goal:** Deliver the first complete in-player workflow using the proven extractor and backend.
@@ -653,8 +708,15 @@ This initial log captures current implementation choices. Status must be updated
 | **Decision** | **Reason** | **Status** |
 | --- | --- | --- |
 | Local backend | Keeps credentials, persistence, and processing on the owner’s computer and avoids cloud infrastructure. | Current decision |
-| FastAPI | Provides a small typed Python HTTP layer around the translation engine. | Current decision |
-| SQLite | Sufficient durable storage for one user, cache reuse, and restart recovery. | Current decision |
+| FastAPI | Provides a small typed Python HTTP layer around the translation engine. | Implemented in Phase 2a (`subtitle-api`) |
+| SQLite | Sufficient durable storage for one user, cache reuse, and restart recovery. | Current decision; deferred to Phase 2b |
+| Phase 2 split into 2a / 2b | Ship an extension-callable API first; defer persistence, caching, jobs, recovery, and polling so the HTTP contract is proven before storage design is committed. | Current decision (2026-07-25) |
+| Phase 1 engine unchanged; API layer is additive | A framework-free `TranslationService` wraps `pipeline.translate_cues` rather than modifying it, so the engine keeps its Phase 1 validation evidence and stays usable from the CLI. Phase 1 engine files are byte-identical after Phase 2a. | Current decision (2026-07-25) |
+| Localhost single-user service | Bound to 127.0.0.1 with an explicit CORS allowlist, no accounts, no authentication, no multi-user isolation — matching the personal-MVP scope. | Current decision (2026-07-25) |
+| Provider credentials remain environment-only | Providers read `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` from the environment themselves; the settings object never stores a key, and only its *presence* is reported by `GET /health`. Provider error text is sanitized before it reaches a response. | Current decision (2026-07-25) |
+| Synchronous `POST /translate` in Phase 2a | Simple and adequate for one local user; `status` is job-shaped so async jobs and polling can be added in Phase 2b without breaking the extension. Cost: a long video holds the connection for minutes. | Current decision; revisited in Phase 2b |
+| Extension owns `cue_index` | The backend preserves and echoes client cue indexes exactly and never renumbers, so the extension can map results back to its captured cues. | Current decision (2026-07-25) |
+| FastAPI as an optional `[api]` extra | Keeps the Phase 1 engine and its tests free of required third-party dependencies; the engine suite still runs when the extra is absent. | Current decision (2026-07-25) |
 | TypeScript extension | Improves contract and lifecycle safety in a changing browser integration. | Current decision |
 | Browser-side caption capture | Uses the active YouTube session and avoids backend scraping or cookie handling. | Boundary decided; method validated (Phase 0, owner-validated 2026-07-22): main-world json3 fetch. |
 | TextTrack synchronization | Delegates cue activation to the media clock while allowing a custom Persian overlay. | Current decision; validate in Phase 3 |

@@ -1,20 +1,24 @@
 [project]
 name = "subtitle-translator"
-version = "0.1.0"
-description = "Phase 1 — standalone CLI translation engine (English subtitle cues -> natural Persian SRT). No FastAPI, no SQLite, no server."
+version = "0.2.0"
+description = "English subtitle cues -> natural Persian SRT. Phase 1 CLI engine plus the Phase 2a local FastAPI service. No SQLite, no job system, no cloud."
 requires-python = ">=3.10"
-# The core engine and its test suite have ZERO required third-party deps —
-# they run offline with the built-in MockProvider. The real online provider
-# needs the `anthropic` SDK, declared as an optional extra so `pip install`
-# and the offline tests don't require it.
+# The core engine and its Phase 1 test suite have ZERO required third-party
+# deps — they run offline with the built-in MockProvider. The real online
+# provider needs the `anthropic` SDK and the local API service needs FastAPI;
+# both are optional extras so `pip install` and the offline engine tests do not
+# require them.
 dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
-dev = ["pytest>=8"]
+api = ["fastapi>=0.115", "uvicorn>=0.30", "pydantic>=2"]
+# httpx is required by fastapi.testclient.TestClient.
+dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]
 subtitle-translate = "subtitle_translator.cli:main"
+subtitle-api = "subtitle_translator.api.runner:main"
 
 [build-system]
 requires = ["setuptools>=68"]

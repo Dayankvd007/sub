@@ -36,6 +36,58 @@ def load_cues(path: str | Path) -> list[Cue]:
     return parse_srt(text)
 
 
+def cues_from_payload(rows: list[dict]) -> list[Cue]:
+    """Build cues from an already-normalized API payload.
+
+    Unlike the file loaders, this does NOT renumber: the caller (the Chrome
+    extension) owns cue identity, so `cue_index` is preserved exactly as
+    received and echoed back unchanged in the response. Ordering, uniqueness,
+    and timing are validated here so malformed input fails at the API boundary
+    rather than part-way through a paid provider call.
+    """
+    if not rows:
+        raise LoaderError("No cues supplied.")
+
+    cues: list[Cue] = []
+    seen: set[int] = set()
+    previous_index: int | None = None
+
+    for position, row in enumerate(rows):
+        for field_name in ("cue_index", "start_ms", "end_ms", "english_text"):
+            if field_name not in row:
+                raise LoaderError(f"Cue at position {position}: missing {field_name!r}.")
+        try:
+            cue_index = int(row["cue_index"])
+            start_ms = int(row["start_ms"])
+            end_ms = int(row["end_ms"])
+        except (TypeError, ValueError) as exc:
+            raise LoaderError(f"Cue at position {position}: non-integer index or timing.") from exc
+
+        if cue_index in seen:
+            raise LoaderError(f"Duplicate cue_index {cue_index}.")
+        if previous_index is not None and cue_index <= previous_index:
+            raise LoaderError(
+                f"Cue indexes must be strictly increasing in source order: "
+                f"{cue_index} came after {previous_index}."
+            )
+        if start_ms < 0:
+            raise LoaderError(f"Cue {cue_index}: negative start_ms ({start_ms}).")
+        if end_ms <= start_ms:
+            raise LoaderError(
+                f"Cue {cue_index}: end_ms ({end_ms}) must be greater than start_ms ({start_ms})."
+            )
+
+        text = _norm_text(str(row["english_text"]))
+        if not text:
+            raise LoaderError(f"Cue {cue_index}: empty text after normalization.")
+
+        seen.add(cue_index)
+        previous_index = cue_index
+        cues.append(Cue(cue_index=cue_index, start_ms=start_ms, end_ms=end_ms, english_text=text))
+
+    return cues
+
+
 def _load_json(text: str) -> list[Cue]:
     try:
         data = json.loads(text)

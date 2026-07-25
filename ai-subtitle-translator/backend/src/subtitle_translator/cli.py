@@ -13,17 +13,20 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_MODEL, TranslationConfig
+from .envfile import load_dotenv
 from .loaders import LoaderError, load_cues
 from .pipeline import translate_cues
-from .providers import AnthropicProvider, MockProvider, ProviderError, TranslationProvider
+from .providers import AnthropicProvider, MockProvider, OpenRouterProvider, ProviderError, TranslationProvider
 from .srt import to_srt
 
 
-def _build_provider(name: str, model: str) -> TranslationProvider:
+def _build_provider(name: str, model: str | None) -> TranslationProvider:
     if name == "mock":
         return MockProvider()
     if name == "anthropic":
-        return AnthropicProvider(model=model)
+        return AnthropicProvider(model=model or DEFAULT_MODEL)
+    if name == "openrouter":
+        return OpenRouterProvider(model=model)
     raise ValueError(f"Unknown provider: {name!r}")
 
 
@@ -37,10 +40,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         default="anthropic",
-        choices=["anthropic", "mock"],
+        choices=["anthropic", "openrouter", "mock"],
         help="Translation provider (default: anthropic). 'mock' runs offline with no API key.",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model id (default: {DEFAULT_MODEL}).")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            f"Model id. Default: {DEFAULT_MODEL} for --provider anthropic, "
+            "$OPENROUTER_MODEL for --provider openrouter."
+        ),
+    )
     parser.add_argument("--title", help="Optional video title passed to the model as context.")
     parser.add_argument("--window-size", type=int, default=50, help="Target cues per window (default: 50).")
     parser.add_argument("--max-window-size", type=int, default=70, help="Max cues per window (default: 70).")
@@ -50,6 +60,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv(Path(__file__))  # picks up a local .env for OPENROUTER_* etc.; never overrides real env
     args = build_arg_parser().parse_args(argv)
 
     try:
@@ -58,20 +69,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: could not load input: {exc}", file=sys.stderr)
         return 2
 
-    config = TranslationConfig(
-        provider_name=args.provider,
-        model=args.model,
-        target_size=args.window_size,
-        max_size=args.max_window_size,
-        context=args.context,
-        title=args.title,
-    )
-
     try:
         provider = _build_provider(args.provider, args.model)
     except ProviderError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    config = TranslationConfig(
+        provider_name=args.provider,
+        model=getattr(provider, "model", args.model) or DEFAULT_MODEL,
+        target_size=args.window_size,
+        max_size=args.max_window_size,
+        context=args.context,
+        title=args.title,
+    )
 
     try:
         result = translate_cues(cues, provider, config)
@@ -93,6 +104,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     if s.failed_indices:
         print(f"[stats] FAILED cue indexes: {s.failed_indices}", file=sys.stderr)
+
+    usage = getattr(provider, "last_usage", None)
+    if usage:
+        cost = usage.get("cost")
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        print(
+            f"[usage] model={config.model} prompt_tokens={prompt_tokens} "
+            f"completion_tokens={completion_tokens} "
+            f"last_call_cost_usd={cost if cost is not None else 'n/a'}",
+            file=sys.stderr,
+        )
 
     if not args.output:
         sys.stdout.write(srt_text)

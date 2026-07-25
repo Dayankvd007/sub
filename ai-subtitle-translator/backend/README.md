@@ -174,7 +174,10 @@ Returns **200** rather than 201 when nothing was created:
 ### `GET /jobs/{id}` (Phase 2b-2)
 
 Poll roughly every 2 s while `done` is false. `?after_cue_index=N` returns only
-newer cues; `?include_srt=true` renders the full subtitle file.
+newer cues. `?include_srt=true` renders a subtitle file from **all** validated
+cues, **regardless of any cursor** — an SRT containing only the cues past a
+cursor would be useless. A separate `GET /jobs/{id}/srt` endpoint is deferred,
+not removed: this covers export today and leaves that path free.
 
 ```jsonc
 { "job_id": 42, "video_id": "dQw4w9WgXcQ", "status": "processing",
@@ -233,9 +236,17 @@ crash loses at most the window in flight.
 
 **SQLite is the queue of record.** The in-memory queue is only a doorbell and is
 allowed to die with the process: on startup the worker sweeps every job left
-`queued`/`processing` and re-queues it. Resume reloads the stored source cues,
-re-derives the same deterministic windows, and translates only what has no
-committed translation — so **completed cues are never paid for twice**.
+`queued`/`processing` and re-queues it.
+
+Resume reloads the stored source cues and translates **only what has no
+committed translation** — so completed cues are never paid for twice, not even
+one sitting inside a window that was only partly finished. The accepted
+trade-off: the remaining cues are re-windowed from scratch, so **resumed window
+boundaries and their context neighbours may differ from the original run**.
+Context affects wording, not correctness — every cue is still translated exactly
+once, with its original timing and the same validation. Preserving the original
+layout would have meant re-translating partially completed windows, i.e. paying
+the provider again to make a rare path byte-reproducible.
 
 Failure handling is bounded at every level: malformed model output gets the
 Phase 1 corrective retry then split (ending `partial`); a provider transport
@@ -247,6 +258,19 @@ In every case, cues already translated remain readable.
 - `SUBTITLE_JOB_WORKER_ENABLED` — run the worker in this process (default true).
 - `SUBTITLE_JOB_MAX_RESUME_ATTEMPTS` — restart resumes before giving up (3).
 - `SUBTITLE_JOB_PROVIDER_RETRIES` — provider retries per job (2).
+
+### Effect on the Phase 1 engine
+
+Jobs needed one hook into the pipeline's window loop, and got exactly that:
+`translate_cues` gained an optional keyword-only `on_window_done` callback that
+is inert when omitted. The CLI and `POST /translate` pass nothing and behave
+exactly as they did in Phase 1.
+
+**No other Phase 1 engine file changed.** `cleaning.py`, `dedup.py`,
+`chunking.py`, `prompts.py`, `providers.py`, `validation.py`, `srt.py`,
+`loaders.py`, `models.py`, `config.py`, `fingerprint.py`, and `cli.py` are
+byte-identical to their pre-Phase-2b-2 state, so Phase 1's validation evidence
+still stands.
 
 ## Test
 

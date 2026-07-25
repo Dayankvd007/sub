@@ -332,8 +332,34 @@ pending" recovery rule above — the state it cleans up is designed out.
 Recovery: on startup the worker sweeps every job in `queued`/`processing`,
 increments `attempt_count`, and re-queues it — or fails it once `attempt_count`
 reaches its limit, so a job that crashes the process cannot retry forever at the
-provider's expense. A resume reloads the stored source cues, re-derives the
-deterministic windows, and translates only cues with no committed translation.
+provider's expense.
+
+#### Accepted recovery trade-off: windows are recomputed on resume
+
+A resume reloads the stored source cues and translates **only the cues with no
+committed translation**. It does not replay the original run's window layout:
+the remaining cues are re-windowed from scratch, so **resumed window boundaries
+and the context neighbours inside them may differ from the first run**.
+
+This is a deliberate trade, and it favours resume:
+
+- **What it buys.** No completed cue is ever sent to the provider again — not
+  even one sitting inside a window that was only partially finished. A resume
+  therefore costs **zero** duplicate provider calls. Preserving the original
+  boundaries would have meant re-translating any partially completed window in
+  full.
+- **What it costs.** A cue translated after a resume may have seen slightly
+  different surrounding context than it would have on an uninterrupted run.
+  Context affects wording, not the index contract: every cue is still
+  translated exactly once, timing is untouched, and validation is unchanged.
+- **Why it is acceptable here.** Interruption is the rare path, the context
+  window is only a couple of cues either side, and the alternative spends real
+  money to make a rare path byte-reproducible.
+
+This also follows from the decision to touch the Phase 1 engine only through an
+optional callback: with no way to tell `translate_cues` to *skip* windows, the
+runner passes it the remaining cues instead. Both constraints point the same way.
+
 **Completed cues are never translated again.** The bounded, accepted loss is the
 window in flight at the moment of a crash: its provider call was paid for and
 its result is not persisted (≈70 cues, well under a cent).

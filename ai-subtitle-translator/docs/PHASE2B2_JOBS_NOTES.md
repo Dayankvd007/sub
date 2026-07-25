@@ -1,9 +1,28 @@
 # Phase 2b-2 — Jobs and Progressive Delivery: implementation record
 
-**Status:** Completed 2026-07-25. Exit gate P2-08 passed; Phase 3 may begin.
+**Status:** Completed and **merged** 2026-07-25 (PR #11). Exit gate P2-08 passed.
+The backend is complete. **Phase 3 — Chrome Extension is Not Started.**
 
 **Goal:** support long-running translations with a job lifecycle, progressive
 delivery, polling, and restart recovery — without leaving personal-MVP scope.
+
+## Shipped surface, at a glance
+
+| Item | As merged |
+| --- | --- |
+| `POST /jobs` | Creates, reuses, resumes, or cache-hits a job; returns `job_id` immediately. `201` when created, `200` otherwise. |
+| `GET /jobs/{id}` | Reads persisted progress: status, progress counters, validated cues past an `after_cue_index` cursor, `failed_indices`, typed error. Never creates work. |
+| Processing model | **One sequential background worker thread.** One job at a time, windows in video order. No broker, no external queue, no new dependency. |
+| Durability | **SQLite is the queue of record.** The in-memory `queue.Queue` is only a doorbell and may be lost freely. |
+| Persistence granularity | **Per window.** Each translation window is committed as it finishes — the property that yields both progressive delivery and crash safety. |
+| Startup recovery | Sweeps every job left `queued`/`processing`, increments `attempt_count`, re-queues — or fails it past the limit so a crash loop cannot burn provider budget. |
+| Progressive polling | Cursor `after_cue_index` over **any validated range**, plus client-side `cue_index` dedup, plus one final cursor-less reconciliation read once `done` is true. |
+| Idempotent creation | The Phase 2b-1 UNIQUE cache identity is the job's idempotency key — a repeat cannot start a second translation. |
+| Cache hit | A completed record returns `cache_hit: true` with every cue inline: no worker, no provider call, no polling, no API key. |
+| `POST /translate` | Contract unchanged, plus `409 job_in_progress` when an active job holds the same cache identity. |
+| `?include_srt=true` | Renders SRT from **all** validated cues, **regardless of any cursor** — a file containing only the tail past a cursor would be useless. |
+| `GET /jobs/{id}/srt` | **Deferred.** Not built; `?include_srt=true` covers export and the path stays free for later. |
+| Phase 1 engine | Changed **only** through the approved optional `on_window_done` callback in `pipeline.py`. No other engine file changed. |
 
 ## What was built
 
@@ -77,13 +96,42 @@ orchestration inside the job layer (two copies of the logic to keep in sync), or
 refactoring `translate_cues` into a generator (a larger change to validated code
 for the same result).
 
-One consequence worth recording: because the runner cannot tell the pipeline to
-*skip* windows, a resume passes only the not-yet-completed cues, so windows are
-recomputed over the remainder rather than being identical to the original run.
-This is strictly better than the alternative — a partially completed window is
-never re-translated, so a resume costs **zero** duplicate provider calls. The
-trade-off is that on a resume, window boundaries differ from the first run, so
-context neighbours differ slightly.
+**No other Phase 1 engine file changed.** `cleaning.py`, `dedup.py`,
+`chunking.py`, `prompts.py`, `providers.py`, `validation.py`, `srt.py`,
+`loaders.py`, `models.py`, `config.py`, and `fingerprint.py` are byte-identical
+to the pre-Phase-2b-2 commit, verified by `git diff --stat`. `cli.py` is
+unchanged too, so the CLI still exercises the engine exactly as Phase 1 did.
+
+## Accepted recovery trade-off: windows are recomputed on resume
+
+This is the one behavioural difference a reader should not have to discover from
+the code.
+
+**What happens.** A resume reloads the stored source cues and translates only
+the cues with **no committed translation**. It does not replay the original
+run's window layout — the remaining cues are re-windowed from scratch. So
+**resumed window boundaries, and the context neighbours inside them, may differ
+from the original run.**
+
+**What it buys.** No completed cue is ever sent to the provider a second time —
+not even one sitting inside a window that was only partially finished. A resume
+therefore costs **zero** duplicate provider calls.
+
+**What it costs.** A cue translated after a resume may have seen slightly
+different surrounding context than it would have on an uninterrupted run.
+Context influences wording only: every cue is still translated exactly once, the
+index contract is preserved, timing is untouched, and validation is identical.
+
+**Why this is the right trade here.** The alternative — preserving the original
+boundaries — means re-translating any partially completed window in full, i.e.
+spending real money on every resume to make a rare path byte-reproducible.
+Interruption is the exception, and the context window is only a couple of cues
+either side.
+
+It also falls out of the approved engine constraint: with no way to tell
+`translate_cues` to *skip* windows, the runner passes it the remaining cues
+instead. Both the cost argument and the engine constraint point the same way,
+which is why this was not treated as a compromise.
 
 ## Failure and recovery model
 

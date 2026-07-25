@@ -39,10 +39,13 @@ SQLite Cache
 Persian Subtitle Rendering
 ```
 
-### Implemented flow as of Phase 2b-1
+### Implemented flow as of Phase 2b-2
 
-The backend half of the diagram above now exists, including persistence and the
-cache. The concrete call chain is:
+The backend half of the diagram above now exists in full: persistence, cache,
+jobs, progressive delivery, and recovery. There are two entry points sharing one
+database and one cache identity.
+
+**Synchronous path — `POST /translate`** (Phase 2a/2b-1, unchanged):
 
 ```text
 Chrome Extension
@@ -53,7 +56,7 @@ TranslationService    (subtitle_translator/service.py — no web framework)
 ↓
 Cache lookup          (fingerprint.py + repository.py → SQLite)
 │                       hit  → stored Persian cues returned, no provider call
-↓ miss
+↓ miss                  active job for this identity → 409 job_in_progress
 pipeline.translate_cues   (Phase 1 engine, unchanged)
 ↓
 Provider abstraction      (TranslationProvider)
@@ -63,8 +66,29 @@ OpenRouter API
 persist validated cues    (repository.py → SQLite)
 ```
 
-The job system, background processing, and polling are Phase 2b-2 and are not
-yet built; `POST /translate` runs the whole video synchronously in one request.
+**Job path — `POST /jobs` + `GET /jobs/{id}`** (Phase 2b-2):
+
+```text
+Chrome Extension
+↓  POST /jobs                              returns job_id immediately
+API routes → JobService    (jobs.py — no web framework)
+↓
+create / reuse / resume / cache-hit        (repository.py → SQLite)
+↓  source cues persisted BEFORE any model work
+doorbell queue.Queue  ──►  JobWorker       (one background thread, one job at a time)
+                              ↓
+                           JobRunner       clean → dedup → build_windows
+                              ↓  per window: prompt → provider → validate
+                              ↓            → COMMIT to SQLite → next window
+                           Repository
+                              ↑
+Chrome Extension  ──────────  GET /jobs/{id}?after_cue_index=N   (~2 s polling)
+```
+
+The per-window commit is the whole design: it is simultaneously what makes
+results available progressively and what makes a restart lose at most the
+window in flight. SQLite is the durable queue; the in-memory queue is only a
+wake-up signal, and startup recovery re-queues anything left unfinished.
 
 ### Main components
 
@@ -226,6 +250,13 @@ The backend is a local FastAPI process bound to 127.0.0.1. It accepts structured
 
 **Open question:** The exact in-process execution mechanism—synchronous task, thread, or asyncio worker—should be selected after the provider SDK’s behavior is measured. This does not justify a broker.
 
+**Resolved in Phase 2b-2: one background thread**, processing one job at a time,
+sequentially. The provider uses blocking stdlib `urllib` and `sqlite3` is
+blocking too, so an asyncio worker would have required rewriting Phase-1-validated
+provider code onto an async HTTP client and adding `aiosqlite` — new dependencies
+for parallelism a single user does not need. Concurrency of one additionally
+bounds provider cost and rate-limit exposure. No broker, as expected.
+
 ### Responsibilities
 
 - Validate incoming video metadata, cache identity, cue indexes, timestamps, text, and request size.
@@ -265,6 +296,47 @@ queued → processing → partial → completed
 - **failed —** processing stopped with a bounded, recorded error; existing completed cues remain available.
 
 A process restart should recover persisted job state. Completed cues must not be translated again. Any cue or window left in a transient processing state may be returned to pending after startup, using a simple deterministic recovery rule.
+
+#### As implemented in Phase 2b-2
+
+The draft above drew `partial` as a mid-run state. Implementation resolved it
+differently, because Phase 2b-1 had already given `partial` a *terminal* meaning
+in storage (finished, with failed cues). Two meanings for one value would have
+been a bug source, so mid-run progress is carried by `processing` plus counters:
+
+```text
+(new) ──► queued ──► processing ──┬──► completed
+            ▲                     ├──► partial
+            │                     └──► failed
+            └── restart sweep, or re-POST /jobs to resume ──┘
+```
+
+- **queued —** validated and persisted, including every source cue; not started.
+- **processing —** the worker owns it. `completed_cues` may already be above
+  zero — this is the progressive-delivery state, and polling returns whatever
+  is committed.
+- **completed —** every speech cue has a validated stored result. The only
+  status served as a cache hit.
+- **partial —** *terminal.* The run finished but some indexes exhausted the
+  bounded retry/split budget. Completed cues stay readable; re-posting resumes.
+- **failed —** *terminal.* Stopped on a provider, transport, or internal error.
+  Completed cues stay readable; re-posting resumes.
+
+Cue-level status is `pending`, `completed`, `failed`, or `skipped` (non-speech
+or rolling-duplicate — deliberately never sent to a model, as distinct from
+"not attempted yet"). There is deliberately **no** cue-level `processing` value:
+because commits happen at window granularity, a cue row is only ever pending or
+terminal. That removes the need for the "return transient processing cues to
+pending" recovery rule above — the state it cleans up is designed out.
+
+Recovery: on startup the worker sweeps every job in `queued`/`processing`,
+increments `attempt_count`, and re-queues it — or fails it once `attempt_count`
+reaches its limit, so a job that crashes the process cannot retry forever at the
+provider's expense. A resume reloads the stored source cues, re-derives the
+deterministic windows, and translates only cues with no committed translation.
+**Completed cues are never translated again.** The bounded, accepted loss is the
+window in flight at the moment of a crash: its provider call was paid for and
+its result is not persisted (≈70 cues, well under a cent).
 
 ### Local security boundary
 
@@ -323,6 +395,22 @@ The target output still maps to original cue indexes. The model may use adjacent
 The safest initial delivery policy is to expose only validated cues. The backend processes from the start of the video and can return completed ranges as soon as they are committed. Whether the first end-to-end extension waits for full completion or appends partial ranges is a milestone choice; the storage and API contract should support both without requiring WebSockets.
 
 **Open question:** Should partial cues be returned as any validated range or only as the longest contiguous range from the start? Phase 2 should choose the simplest policy that cannot display gaps as if the job were complete.
+
+**Resolved in Phase 2b-2: any validated range.** `GET /jobs/{id}` accepts an
+`after_cue_index` cursor and returns any committed cue past it. Windows are
+processed in video order, so cues normally *are* a contiguous prefix; a
+contiguous-only policy would have added no safety while stalling delivery
+forever on one permanently-failed window. The two guarantees that make the
+looser policy safe:
+
+1. The client inserts each `cue_index` at most once (already required by P3-04),
+   so repeated or overlapping polls cannot duplicate a rendered cue.
+2. When `done` becomes true the client makes **one final read with no cursor**
+   and reconciles — which covers any cue that completed out of order, at the
+   cost of a single extra request per job.
+
+A gap is never presented as completion: `status` and `failed_indices` are
+explicit, and only `completed` is served as a cache hit.
 
 ## 6. AI Translation Layer
 
@@ -415,6 +503,32 @@ SQLite stores the minimum state required for caching, progressive delivery, and 
 
 If window-level retry metadata is needed during implementation, prefer the smallest recoverable representation. Do not add billing, account, analytics, audit-event, or distributed-worker tables.
 
+#### Phase 2b-2 additions
+
+Still two tables. `videos.id` is the `job_id`, and the UNIQUE cache identity is
+therefore also the job's idempotency key — a repeated create cannot start a
+second translation. Four nullable/defaulted columns were added to `videos`:
+
+| Field | Purpose |
+| --- | --- |
+| speech_cues | Progress denominator. `total_cues` includes non-speech cues that are never translated, so it would never reach 100%. Set by the worker after cleaning and dedup; NULL while queued. |
+| error_code | Typed error for `GET /jobs/{id}`. |
+| error_message | Sanitized human-readable text. Never a provider body or stack trace. |
+| attempt_count | Restart resumes so far. Bounds crash-loop retries. |
+
+Deliberately **not** added: a jobs table (the videos record is the job); a
+windows table (windows are a pure function of stored cues and config, so a
+resume recomputes them); a denormalized completed-cue counter (a COUNT over a
+≤5000-row table is free and cannot drift); per-cue sequence numbers (the cursor
+policy in §5 makes them unnecessary); worker/lock/heartbeat columns (one process,
+one worker).
+
+Migration is a forward-only `PRAGMA user_version` check plus idempotent
+`ALTER TABLE ... ADD COLUMN` — no framework, no version table. No backfill is
+required: every pre-existing record was written by the synchronous path and is
+already terminal, so NULL job columns are correct for it and the recovery sweep
+never selects it.
+
 ### Caching logic
 
 1. The extension sends video_id, ordered cues, and the caption fingerprint; the backend supplies the configured model and prompt version.
@@ -464,6 +578,29 @@ The extension may poll approximately every two seconds while a job is active. It
 **Decision:** Use polling for v0.1.
 
 **Assumption:** Two-second polling provides acceptable progress responsiveness without meaningful local overhead.
+
+**Implemented in Phase 2b-2.** `POST /jobs` and `GET /jobs/{id}` exist as
+specified above, with these concrete resolutions:
+
+- `job_id` is `videos.id`, exposed directly. Adequate for a localhost
+  single-user tool; no opaque token is warranted.
+- The create response is `201` only when a record was actually created; reuse,
+  resume, and cache hit all return `200`.
+- The cursor is `after_cue_index` (see §5). `next_cursor` is echoed back so the
+  client never has to compute it.
+- `GET /jobs/{id}?include_srt=true` renders SRT from **every** validated cue,
+  ignoring the cursor — a subtitle file of only the tail would be useless. A
+  separate `GET /jobs/{id}/srt` endpoint was therefore not built; the contract
+  remains free for it later.
+- `POST /translate` is unchanged except for one guard: it returns
+  `409 job_in_progress` when an active job holds the same cache identity,
+  because `Repository.save()` rewrites a record's cues wholesale and would
+  otherwise delete the running job's committed progress.
+- `503 jobs_unavailable` when persistence is disabled — jobs are inseparable
+  from durable state, so the API says so rather than pretending.
+- Cancellation (`DELETE /jobs/{id}`) and record retention are deliberately out
+  of scope: a job whose viewer navigated away simply finishes and populates the
+  cache.
 
 ### Error and security contract
 
@@ -705,13 +842,54 @@ lifecycle states.
 A real uvicorn run returned `cache_hit=false, provider_calls=1` then
 `cache_hit=true, provider_calls=0`.
 
-#### Phase 2b-2 — Jobs and Progressive Delivery (not started)
+#### Phase 2b-2 — Jobs and Progressive Delivery (completed 2026-07-25)
 
 The job system (`POST /jobs`, `GET /jobs/{id}`), a single sequential background
-worker, restart recovery, and the polling contract. The Phase 2a `status` field
-is already job-shaped (`completed` / `partial`) so these can be added without
-breaking the extension. Entry condition: measured end-to-end latency for a real
-video, which determines whether async delivery is justified at all.
+worker, restart recovery, and the polling contract. The latency-measurement
+entry condition was **waived by the owner**: the justification for jobs is
+progressive delivery and reliable long-running translation, not latency alone.
+
+**Layer responsibilities**
+
+- **`jobs.py` — the whole job layer**, framework-free like `service.py`.
+  `JobService` (create/reuse/resume/cache-hit + status reads), `JobRunner` (one
+  job: clean → dedup → windows → commit each window), `JobWorker` (one thread,
+  a doorbell queue, and the startup recovery sweep).
+- **`repository.py` — additive job methods.** `find_completed` and `save` are
+  untouched, so Phase 2b-1's cache evidence still holds.
+- **`pipeline.py` — one optional keyword-only `on_window_done` callback.** This
+  is the single change to the Phase 1 engine, and it is inert by default: the
+  CLI and `POST /translate` pass nothing and behave exactly as before. The
+  alternatives — duplicating the clean/dedup/window orchestration inside the
+  job layer, or refactoring `translate_cues` into a generator — were both larger
+  and riskier for the same result.
+
+**Why one thread and not an async queue**
+
+The provider is blocking stdlib `urllib`, and `sqlite3` is blocking too, so an
+asyncio design would have required rewriting the Phase-1-validated provider onto
+an async HTTP client and adding `aiosqlite` — new dependencies to buy
+parallelism a single user does not need. Concurrency of one also *bounds* cost
+and rate-limit exposure. `db.py` had already been written for this (a
+short-lived connection per operation, no shared state).
+
+**Recovery model**
+
+SQLite is the queue of record; `queue.Queue` is only a doorbell and is allowed
+to die with the process. Duplicate provider calls are prevented at five points:
+the cache hit short-circuits before the provider is constructed; an active job
+returns its existing `job_id` instead of enqueuing again; the worker re-checks
+status at pickup so a duplicate doorbell ring is dropped; worker concurrency is
+one; and a resume skips every cue with a committed translation.
+
+**Evidence:** 153 tests pass with the `[api]` extra (96 pre-existing + 57 new);
+112 pass and 4 skip without it, so the engine keeps zero required dependencies.
+Against a real uvicorn process with the real worker thread: a 400-cue job
+returned a `job_id` in 0.04 s, delivered cues while still `processing`, and
+completed with all 400 present exactly once across cursor-based polling with no
+duplicates. A 5000-cue job was then **`SIGKILL`ed mid-translation** with 1700
+cues committed; after restart, 3850 committed cues had survived and the sweep
+resumed it to completion with all 5000 cues present exactly once.
 
 ### Phase 3 — Chrome Extension
 
@@ -770,7 +948,18 @@ This initial log captures current implementation choices. Status must be updated
 | Phase 1 engine unchanged; API layer is additive | A framework-free `TranslationService` wraps `pipeline.translate_cues` rather than modifying it, so the engine keeps its Phase 1 validation evidence and stays usable from the CLI. Phase 1 engine files are byte-identical after Phase 2a. | Current decision (2026-07-25) |
 | Localhost single-user service | Bound to 127.0.0.1 with an explicit CORS allowlist, no accounts, no authentication, no multi-user isolation — matching the personal-MVP scope. | Current decision (2026-07-25) |
 | Provider credentials remain environment-only | Providers read `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` from the environment themselves; the settings object never stores a key, and only its *presence* is reported by `GET /health`. Provider error text is sanitized before it reaches a response. | Current decision (2026-07-25) |
-| Synchronous `POST /translate` in Phase 2a | Simple and adequate for one local user; `status` is job-shaped so async jobs and polling can be added in Phase 2b-2 without breaking the extension. Cost: a long video holds the connection for minutes. | Current decision; revisited in Phase 2b-2 |
+| Synchronous `POST /translate` in Phase 2a | Simple and adequate for one local user; `status` is job-shaped so async jobs and polling can be added in Phase 2b-2 without breaking the extension. Cost: a long video holds the connection for minutes. | Revisited in Phase 2b-2: kept unchanged alongside `POST /jobs`, plus a 409 guard |
+| Job layer beside `TranslationService`, not underneath it | `POST /translate` keeps its Phase 2a/2b-1 contract and test evidence while `POST /jobs` adds progressive delivery. Both share one database and one cache identity, so work done by either is reused by the other. | Current decision (2026-07-25) |
+| A `videos` record is the job record | `videos.id` is the `job_id`, so the existing UNIQUE cache identity doubles as the job's idempotency key — a repeated create cannot start a second translation. No jobs table, per architecture §7. | Current decision (2026-07-25) |
+| One background thread, one job at a time | The provider is blocking stdlib `urllib` and `sqlite3` is blocking; async would mean rewriting validated Phase 1 code and adding dependencies to buy parallelism a single user does not need. Concurrency of one also bounds cost and rate-limit exposure. No Redis, Celery, or broker. | Current decision (2026-07-25) |
+| Commit every translation window to SQLite | One property delivers both features: results become pollable while translation continues, and a crash loses at most the window in flight. | Current decision (2026-07-25) |
+| SQLite is the queue of record; the in-memory queue is only a doorbell | The startup recovery sweep rediscovers every non-terminal job, so queue durability is a non-problem and no broker is needed. | Current decision (2026-07-25) |
+| `partial` is terminal, not a mid-run state | Phase 2b-1 already stored `partial` to mean "finished with failed cues"; giving it a second mid-run meaning would have been a bug source. Mid-run progress is `processing` plus counters. Supersedes the §4 draft diagram. | Current decision (2026-07-25) |
+| Progressive delivery returns any validated range | With a client-side `cue_index` dedup (already required by P3-04) and one final cursor-less reconciliation read, this is safe and cannot stall forever on a failed window, unlike a contiguous-prefix-only policy. Answers the §5 open question. | Current decision (2026-07-25) |
+| Phase 1 engine gains only an optional `on_window_done` callback | Per-window commits need a hook into the window loop. The callback is inert by default, so the CLI and `POST /translate` behave exactly as before and every Phase 1 test passes unmodified. The alternatives — duplicating orchestration or refactoring `translate_cues` into a generator — were larger and riskier. | Current decision (2026-07-25) |
+| `POST /translate` returns 409 while a job holds the same identity | `Repository.save()` rewrites a record's cues wholesale and would delete the running job's committed progress. A guard, not a contract change. | Current decision (2026-07-25) |
+| Bounded failure at every level | Malformed output uses the Phase 1 retry/split (ending `partial`); a provider transport failure is retried twice (2 s, 8 s) from the last committed window; a job interrupted past `attempt_count` is failed rather than retried forever. Translated cues always survive. | Current decision (2026-07-25) |
+| No cancellation endpoint, no retention policy | A job whose viewer navigated away finishes and populates the cache, which is the useful outcome for a personal tool. The database grows by roughly one row per translated video. | Current decision (2026-07-25); revisit only on evidence |
 | Extension owns `cue_index` | The backend preserves and echoes client cue indexes exactly and never renumbers, so the extension can map results back to its captured cues. | Current decision (2026-07-25) |
 | FastAPI as an optional `[api]` extra | Keeps the Phase 1 engine and its tests free of required third-party dependencies; the engine suite still runs when the extra is absent. | Current decision (2026-07-25) |
 | TypeScript extension | Improves contract and lifecycle safety in a changing browser integration. | Current decision |
@@ -802,8 +991,8 @@ These questions are intentionally unresolved. Each should be answered by the pha
 
 ### Resolve in Phases 2–4
 
-- Should progressive delivery expose any validated range or only a contiguous range from the start?
-- What polling cursor produces the simplest reliable incremental response?
+- ~~Should progressive delivery expose any validated range or only a contiguous range from the start?~~ **Resolved (Phase 2b-2): any validated range**, with client-side `cue_index` dedup and one final cursor-less reconciliation read. See §5.
+- ~~What polling cursor produces the simplest reliable incremental response?~~ **Resolved (Phase 2b-2): `after_cue_index`**, with `next_cursor` echoed back. No per-cue sequence column was needed.
 - Which ad-state signal is reliable enough to hide and restore the overlay?
 - What overlay dimensions and font-size defaults are most readable across the owner’s common player sizes?
 - Is SRT export needed immediately after the core workflow or only as a later convenience?

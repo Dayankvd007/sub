@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..db import default_db_path
 from ..envfile import load_dotenv
+from ..jobs import DEFAULT_MAX_RESUME_ATTEMPTS, DEFAULT_PROVIDER_RETRIES
 
 # Phase 1 exit-gate selection (docs/PHASE1_TRANSLATION_ENGINE_NOTES.md).
 # The CLI keeps its own defaults; this is the service default only.
@@ -75,6 +76,14 @@ class Settings:
     # data directory, never inside the repository.
     db_path: str = ""
     cache_enabled: bool = True
+    # Phase 2b-2: the background job worker. Disabling it leaves POST /jobs able
+    # to create and read jobs but nothing to run them — useful in tests, which
+    # drive the runner synchronously.
+    job_worker_enabled: bool = True
+    # Restart sweeps allowed before a repeatedly interrupted job is failed.
+    job_max_resume_attempts: int = DEFAULT_MAX_RESUME_ATTEMPTS
+    # Job-level retries for a provider transport failure.
+    job_provider_retries: int = DEFAULT_PROVIDER_RETRIES
 
     @property
     def api_key_present(self) -> bool:
@@ -104,4 +113,9 @@ def load_settings() -> Settings:
         allow_client_model_override=_env_bool("ALLOW_CLIENT_MODEL_OVERRIDE", False),
         db_path=os.environ.get("SUBTITLE_DB_PATH") or str(default_db_path()),
         cache_enabled=_env_bool("SUBTITLE_CACHE_ENABLED", True),
+        job_worker_enabled=_env_bool("SUBTITLE_JOB_WORKER_ENABLED", True),
+        job_max_resume_attempts=_env_int(
+            "SUBTITLE_JOB_MAX_RESUME_ATTEMPTS", DEFAULT_MAX_RESUME_ATTEMPTS
+        ),
+        job_provider_retries=_env_int("SUBTITLE_JOB_PROVIDER_RETRIES", DEFAULT_PROVIDER_RETRIES),
     )

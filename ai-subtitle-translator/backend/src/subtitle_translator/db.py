@@ -1,15 +1,15 @@
 """SQLite connection handling and schema bootstrap.
 
-Phase 2b-1: persistence and cache only. The schema follows
-`docs/technical-architecture.md` §7 exactly — two tables, no job/billing/audit
-tables. The `status` column already accommodates Phase 2b-2's `queued` and
-`processing` values, so adding the job system needs no migration.
+The schema follows `docs/technical-architecture.md` §7 — two tables, no
+job/billing/audit tables. Phase 2b-2 keeps that shape: a `videos` record *is* a
+job record (`videos.id` is the `job_id`), so the job system adds four nullable
+columns rather than a table.
 
 Threading: FastAPI runs `def` handlers in a threadpool, so requests already
-arrive on different threads. Rather than sharing one connection with
-`check_same_thread=False` plus a lock, every operation opens a short-lived
-connection through `connect()`. There is no shared mutable state, which stays
-correct when the Phase 2b-2 worker thread is added.
+arrive on different threads, and the Phase 2b-2 worker adds one more. Rather
+than sharing one connection with `check_same_thread=False` plus a lock, every
+operation opens a short-lived connection through `connect()`. There is no
+shared mutable state to guard.
 """
 
 from __future__ import annotations
@@ -19,6 +19,10 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+
+# Bumped when the schema changes. 1 = Phase 2b-1 (implicit; never stamped),
+# 2 = Phase 2b-2 job columns.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
@@ -31,7 +35,13 @@ CREATE TABLE IF NOT EXISTS videos (
     prompt_version      TEXT    NOT NULL,
     caption_fingerprint TEXT    NOT NULL,
     created_at          TEXT    NOT NULL,
-    updated_at          TEXT    NOT NULL
+    updated_at          TEXT    NOT NULL,
+    -- Phase 2b-2. Nullable/defaulted so an existing database can be migrated
+    -- in place with ALTER TABLE ADD COLUMN (see _migrate).
+    speech_cues         INTEGER,
+    error_code          TEXT,
+    error_message       TEXT,
+    attempt_count       INTEGER NOT NULL DEFAULT 0
 );
 
 -- One record per cache identity. UNIQUE (rather than a plain index) makes the
@@ -82,6 +92,40 @@ def connect(db_path: str | Path):
         conn.close()
 
 
+# Columns added in schema version 2. Each entry must be a valid
+# `ALTER TABLE videos ADD COLUMN <name> <definition>` — so any NOT NULL column
+# needs a constant DEFAULT, which SQLite requires for ADD COLUMN.
+_V2_VIDEO_COLUMNS = (
+    ("speech_cues", "INTEGER"),
+    ("error_code", "TEXT"),
+    ("error_message", "TEXT"),
+    ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to SCHEMA_VERSION. Idempotent, forward-only.
+
+    `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+    a Phase 2b-1 database needs the new columns added explicitly. No data
+    backfill is required: every pre-existing record was written by the
+    synchronous path and is already terminal, so NULL job columns are correct
+    for it and the recovery sweep never selects it.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
+        return
+
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    for name, definition in _V2_VIDEO_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {definition}")
+
+    # PRAGMA does not accept a bound parameter; the value is a module constant.
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
 def init_schema(db_path: str | Path) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)

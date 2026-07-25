@@ -7,6 +7,8 @@ and reject oversized payloads before any provider call is made.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,7 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .. import __version__ as _pkg_version
-from .deps import get_settings
+from .deps import get_settings, get_worker
 from .routes import router
 from .settings import Settings
 
@@ -54,13 +56,32 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Start the job worker, which first recovers jobs a previous run left open.
+
+        Startup recovery is why the in-memory queue can be thrown away on exit:
+        every non-terminal job is rediscovered from SQLite here.
+        """
+        worker = get_worker() if settings.job_worker_enabled else None
+        if worker is not None:
+            worker.start()
+        try:
+            yield
+        finally:
+            if worker is not None:
+                # Waits for the window in flight to commit rather than losing it.
+                worker.stop()
+
     app = FastAPI(
         title="AI Subtitle Translator — Local API",
         version=_pkg_version,
         description=(
-            "Phase 2a local service over the Phase 1 translation engine. "
-            "Localhost only; no accounts, persistence, or cloud deployment."
+            "Local service over the Phase 1 translation engine: synchronous "
+            "translation, a SQLite cache, and background translation jobs with "
+            "progressive delivery. Localhost only; no accounts or cloud deployment."
         ),
+        lifespan=lifespan,
     )
 
     app.add_middleware(BodySizeLimitMiddleware, max_body_bytes=settings.max_body_bytes)

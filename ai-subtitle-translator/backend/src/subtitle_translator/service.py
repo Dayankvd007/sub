@@ -35,6 +35,15 @@ from .srt import to_srt
 ProviderFactory = Callable[[], TranslationProvider]
 
 
+class JobInProgressError(RuntimeError):
+    """A background job already owns this cache identity.
+
+    `Repository.save()` rewrites a record's cues wholesale, so translating the
+    same identity synchronously while a job is running would delete the job's
+    committed progress. The API maps this to 409.
+    """
+
+
 @dataclass
 class TranslationOutcome:
     """Everything the API needs to build a response."""
@@ -103,6 +112,19 @@ class TranslationService:
             )
             if cached is not None:
                 return self._cached_outcome(cached, include_srt=include_srt, rtl_wrap=rtl_wrap)
+
+            # Checked only after the cache lookup: serving a completed result is
+            # read-only and stays safe even while a job runs.
+            if self._repository.has_active_job(
+                video_id=video_id,
+                caption_fingerprint=fingerprint,
+                model=self._model,
+                prompt_version=PROMPT_VERSION,
+            ):
+                raise JobInProgressError(
+                    "A translation job for this video is already running. "
+                    "Poll GET /jobs/{id} instead of translating it again."
+                )
 
         provider = self._provider_factory()
 

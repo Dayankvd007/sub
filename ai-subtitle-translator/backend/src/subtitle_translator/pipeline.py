@@ -6,11 +6,17 @@ window: prompt -> provider -> validate -> (bounded corrective retry) ->
 
 Every expected speech-cue index is either translated exactly once or reported
 as failed. Nothing is silently dropped.
+
+Phase 2b-2 adds one optional keyword-only hook, `on_window_done`, so a caller
+can persist each window as it completes instead of waiting for the whole run.
+Omitting it — as the CLI and the synchronous API path do — leaves behaviour
+exactly as it was in Phase 1.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .chunking import Window, build_windows
 from .cleaning import clean_cues
@@ -46,6 +52,28 @@ class TranslationResult:
     @property
     def ok(self) -> bool:
         return not self.stats.failed_indices
+
+
+# Called after each window with (that window's validated cues, its failed
+# indexes). Used by the Phase 2b-2 job runner to commit progressively; a
+# callback that raises aborts the run, which is what a failed write should do.
+WindowCallback = Callable[[list[TranslatedCue], list[int]], None]
+
+
+def _build_translated(
+    by_index: dict[int, Cue], translations: dict[int, str]
+) -> list[TranslatedCue]:
+    """Attach original timing and source text to translated strings, in cue order."""
+    return [
+        TranslatedCue(
+            cue_index=by_index[idx].cue_index,
+            start_ms=by_index[idx].start_ms,
+            end_ms=by_index[idx].end_ms,
+            english_text=by_index[idx].english_text,
+            persian_text=translations[idx],
+        )
+        for idx in sorted(translations)
+    ]
 
 
 def _request_for(window: Window, config: TranslationConfig, extra: str | None = None) -> TranslationRequest:
@@ -127,6 +155,8 @@ def translate_cues(
     cues: list[Cue],
     provider: TranslationProvider,
     config: TranslationConfig | None = None,
+    *,
+    on_window_done: WindowCallback | None = None,
 ) -> TranslationResult:
     config = config or TranslationConfig()
     stats = PipelineStats(total_cues=len(cues))
@@ -151,20 +181,18 @@ def translate_cues(
 
     translations: dict[int, str] = {}
     for window in windows:
-        translations.update(_translate_window(window, provider, config, stats, depth=0))
-
-    translated_cues: list[TranslatedCue] = []
-    for idx in sorted(translations):
-        cue = by_index[idx]
-        translated_cues.append(
-            TranslatedCue(
-                cue_index=cue.cue_index,
-                start_ms=cue.start_ms,
-                end_ms=cue.end_ms,
-                english_text=cue.english_text,
-                persian_text=translations[idx],
+        failed_before = len(stats.failed_indices)
+        produced = _translate_window(window, provider, config, stats, depth=0)
+        translations.update(produced)
+        if on_window_done is not None:
+            # Report only what *this* window produced, so the caller can commit
+            # it incrementally without re-writing earlier windows.
+            on_window_done(
+                _build_translated(by_index, produced),
+                sorted(set(stats.failed_indices[failed_before:])),
             )
-        )
+
+    translated_cues = _build_translated(by_index, translations)
     stats.translated = len(translated_cues)
     stats.failed_indices = sorted(set(stats.failed_indices))
     return TranslationResult(translated_cues=translated_cues, stats=stats)

@@ -322,7 +322,7 @@ No model is permanently selected in v0.1. Phase 1 should compare current afforda
 
 **Decision gate:** Choose a model only after the project owner reviews side-by-side or blind outputs and accepts the Persian for long-form viewing.
 
-**Progress (still Phase 1, not yet at the decision gate):** the provider abstraction now has a second real implementation, `OpenRouterProvider`, alongside the existing `AnthropicProvider`; both read credentials only from the local environment. A real SRT fixture and a real JSON3 fixture were both translated successfully through `OpenRouterProvider` with `google/gemini-3.1-flash-lite` (every expected cue, no retries/splits/failures, ~$0.0007 combined cost), and all existing pytest tests still pass. This is a structural smoke test, not the owner's long-form quality review — the decision gate above is not yet reached, and Phase 1 remains in progress. See `docs/PHASE1_TRANSLATION_ENGINE_NOTES.md` for the full record.
+**Result (Phase 1 exit gate passed, 2026-07-25):** the provider abstraction has a second real implementation, `OpenRouterProvider`, alongside the existing `AnthropicProvider`; both read credentials only from the local environment. `OpenRouterProvider` with `google/gemini-3.1-flash-lite` was validated end-to-end on a real YouTube JSON3 capture from a business-related video (482 total cues, 478 speech cues, 10 windows): 478/478 translated, 0 failed, 0 retries, 0 splits, 0 validation errors, ~$0.0019 total cost. The owner reviewed the generated Persian SRT on the actual video and accepted the quality for the educational/business use case. `google/gemini-3.1-flash-lite` via OpenRouter is the selected Phase 1 model; the choice can be revisited later if evidence warrants a change. See `docs/PHASE1_TRANSLATION_ENGINE_NOTES.md` for the full record.
 
 ### Prompt versioning
 
@@ -580,6 +580,17 @@ Development follows risk order. Each milestone must produce evidence and meet it
 
 **Exit criteria:** Every expected cue index is present exactly once, structural failures are bounded and visible, and the project owner considers the Persian comfortable for a complete educational video.
 
+**Phase 1 result (owner-approved 2026-07-25): PASS.** `OpenRouterProvider`
+(`OPENROUTER_API_KEY`/`OPENROUTER_MODEL` from the local environment only) was
+validated on a real YouTube JSON3 subtitle capture from a business-related
+video: 482 total cues, 478 speech / 4 non-speech, 10 windows, 478/478
+translated, 0 failed, 0 retries, 0 splits, 0 validation errors (~1,132 prompt
++ 1,080 completion tokens, ~$0.0019 total cost). The owner reviewed the
+generated Persian SRT on the actual video and accepted the quality for the
+educational/business use case. Selected model: `google/gemini-3.1-flash-lite`
+via OpenRouter — revisitable later if evidence warrants a change. See
+`docs/PHASE1_TRANSLATION_ENGINE_NOTES.md`.
+
 ### Phase 2 — Local Backend
 
 **Goal:** Expose the validated translation engine through a recoverable local API and cache.
@@ -649,6 +660,8 @@ This initial log captures current implementation choices. Status must be updated
 | TextTrack synchronization | Delegates cue activation to the media clock while allowing a custom Persian overlay. | Current decision; validate in Phase 3 |
 | Polling instead of WebSockets | Simple and adequate for one local client and incremental results. | Current decision |
 | No React initially | The MVP UI is too small to justify framework complexity. | Current decision |
+| `OpenRouterProvider` added | Second `TranslationProvider` implementation (OpenAI-compatible chat-completions API) so a wider set of models can be trialed without touching the pipeline; credentials read only from the local `OPENROUTER_API_KEY`/`OPENROUTER_MODEL` environment. | Current decision |
+| Model selection: `google/gemini-3.1-flash-lite` via OpenRouter | Passed the Phase 1 exit gate on a real YouTube JSON3 capture (478/478 cues translated, 0 failures, ~$0.0019 total cost); owner reviewed the Persian SRT on the actual video and accepted quality. | Current decision (Phase 1, 2026-07-25); revisitable later if evidence warrants a change |
 
 ## 14. Open Technical Questions
 

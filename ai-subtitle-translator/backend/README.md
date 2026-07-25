@@ -89,14 +89,14 @@ including corrective-retry recovery and bounded split-on-failure.
 
 Two real providers exist behind the same `TranslationProvider` contract:
 **Anthropic** (default model `claude-sonnet-5`) and **OpenRouter** (model set
-via `--model` or `OPENROUTER_MODEL`). An `OpenRouterProvider` run against a
-real SRT fixture and a real JSON3 fixture with `google/gemini-3.1-flash-lite`
-translated every expected cue with no retries, splits, or validation errors,
-at roughly $0.0007 combined cost — a clean structural result, but **not**
-Phase 1's quality exit gate. The `providers.py` abstraction makes swapping the
-model or adding another provider a small, isolated change. **Phase 1 is still
-in progress, not completed:** the final model selection is still pending the
-owner's manual review of a longer real YouTube capture (roadmap P1-06 / P1-11)
+via `--model` or `OPENROUTER_MODEL`). `OpenRouterProvider` with
+`google/gemini-3.1-flash-lite` passed the Phase 1 quality exit gate on a real
+YouTube JSON3 subtitle capture (482 cues, 478 speech): 478/478 translated, 0
+failed, 0 retries, 0 splits, 0 validation errors, ~$0.0019 total cost. The
+owner reviewed the generated Persian SRT on the actual video and accepted the
+quality. The `providers.py` abstraction makes swapping the model or adding
+another provider a small, isolated change. **Phase 1 is completed:** selected
+model is `google/gemini-3.1-flash-lite` via OpenRouter (roadmap P1-06 / P1-11)
 — see `../docs/PHASE1_TRANSLATION_ENGINE_NOTES.md`.
 
 ## Not in this phase

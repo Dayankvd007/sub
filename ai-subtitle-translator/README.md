@@ -6,9 +6,7 @@ Goal:
 Watch English YouTube videos with natural Persian subtitles inside YouTube.
 
 Current phase:
-Phase 1 — Translation Engine CLI (In Progress: engine built and tested; a real
-OpenRouter run passed on fixtures; long-form quality review by the owner still
-pending — not yet Completed)
+Phase 1 — Translation Engine CLI (Completed 2026-07-25)
 
 - **Phase 0 — Caption Extraction** lives in `extension/`; see
   `extension/README.md` and `docs/PHASE0_EXPERIMENT_NOTES.md`. Verdict: GO
@@ -17,12 +15,12 @@ pending — not yet Completed)
   `backend/README.md` and `docs/PHASE1_TRANSLATION_ENGINE_NOTES.md`. The
   standalone English→Persian SRT engine (loaders, cleaning, rolling dedup,
   context windowing, strict-JSON validation, bounded retry/split, RTL SRT) is
-  built and passes 39 tests. An `OpenRouterProvider` was added and merged; a
-  real SRT fixture and a real JSON3 fixture both translated fully via
-  `google/gemini-3.1-flash-lite` (all cues, no retries/splits/failures, ~$0.0007
-  total). The Persian-quality exit gate still needs the owner to run a longer
-  real YouTube capture and manually review naturalness, fidelity, terminology,
-  segmentation, and long-form comfort before Phase 1 can be marked Completed
-  (see that document).
+  built and passes 39 tests. `OpenRouterProvider` was added and merged, and
+  validated on a real YouTube JSON3 subtitle capture (482 cues, 478 speech)
+  with `google/gemini-3.1-flash-lite`: 478/478 translated, 0 failed, 0
+  retries, 0 splits, 0 validation errors, ~$0.0019 total cost. The owner
+  reviewed the generated Persian SRT on the actual video and accepted the
+  quality. Phase-1 exit gate approved; selected model:
+  `google/gemini-3.1-flash-lite` via OpenRouter (see that document).
 
 No FastAPI, SQLite, or extension UI yet — those are Phase 2+.

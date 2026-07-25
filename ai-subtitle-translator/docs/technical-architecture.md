@@ -39,10 +39,10 @@ SQLite Cache
 Persian Subtitle Rendering
 ```
 
-### Implemented flow as of Phase 2a
+### Implemented flow as of Phase 2b-1
 
-The backend half of the diagram above now exists, minus persistence. The
-concrete call chain is:
+The backend half of the diagram above now exists, including persistence and the
+cache. The concrete call chain is:
 
 ```text
 Chrome Extension
@@ -51,15 +51,20 @@ API routes            (subtitle_translator/api/routes.py)
 ↓
 TranslationService    (subtitle_translator/service.py — no web framework)
 ↓
+Cache lookup          (fingerprint.py + repository.py → SQLite)
+│                       hit  → stored Persian cues returned, no provider call
+↓ miss
 pipeline.translate_cues   (Phase 1 engine, unchanged)
 ↓
 Provider abstraction      (TranslationProvider)
 ↓
 OpenRouter API
+↓
+persist validated cues    (repository.py → SQLite)
 ```
 
-The SQLite cache, job system, and polling are Phase 2b and are not yet built;
-`POST /translate` runs the whole video synchronously in one request.
+The job system, background processing, and polling are Phase 2b-2 and are not
+yet built; `POST /translate` runs the whole video synchronously in one request.
 
 ### Main components
 
@@ -126,10 +131,10 @@ The content script should treat every main-world message and every backend respo
 
 ### Other runtime components
 
-- **FastAPI application —** exposes the small local API and coordinates job lifecycle. *(Phase 2a: implemented as `api/app.py` + `api/routes.py`; job lifecycle is Phase 2b.)*
+- **FastAPI application —** exposes the small local API and coordinates job lifecycle. *(Phase 2a: implemented as `api/app.py` + `api/routes.py`; job lifecycle is Phase 2b-2.)*
 - **Translation service layer —** one framework-free class between the API and the engine, so the validated pipeline stays reusable from the CLI and testable without FastAPI. *(Phase 2a: `service.py`.)*
 - **Translation services —** implement cleaning, context windows, prompt construction, provider calls, and response repair.
-- **SQLite repository —** provides transactional persistence and cache lookup.
+- **SQLite repository —** provides transactional persistence and cache lookup. *(Phase 2b-1: `db.py` owns connections and schema; `repository.py` owns cache lookup and writes; `fingerprint.py` derives cache identity.)*
 - **AI provider adapter —** isolates provider-specific request and response handling behind one internal contract.
 - **Rendering controller —** maps validated translated cues to the current YouTube video and removes them when the lifecycle changes.
 
@@ -656,12 +661,57 @@ and echoed back — the extension owns cue identity. The response may omit
 indexes (non-speech cues are never translated; failures are reported in
 `failed_indices`), so the renderer must treat gaps as "no subtitle".
 
-#### Phase 2b — Persistence and Jobs (not started)
+#### Phase 2b-1 — Persistence and Cache (completed 2026-07-25)
 
-SQLite videos/cues tables, cache identity and reuse, the job system
-(`POST /jobs`, `GET /jobs/{id}`), background processing, restart recovery, and
-the polling contract. The Phase 2a `status` field is already job-shaped
-(`completed` / `partial`) so these can be added without breaking the extension.
+SQLite videos/cues tables, cache identity and reuse, restart-safe storage, and
+the usage-aggregation correction. Built before the job system because the cache
+removes the repeat-video wait with no threads, no new endpoints, and no
+lifecycle states.
+
+**Layer responsibilities**
+
+- **`db.py` — database ownership.** Connections, the schema from §7, and
+  `PRAGMA foreign_keys=ON`. Every operation opens a **short-lived connection**
+  rather than sharing one: FastAPI already runs `def` handlers in a threadpool,
+  so there is no shared connection to guard, and the same holds when the
+  Phase 2b-2 worker thread is added. The database lives in a per-user data
+  directory (`SUBTITLE_DB_PATH`), never inside the repository.
+- **`repository.py` — persistence and lookup.** Finds a completed record for a
+  cache identity and upserts on that identity, so a retranslation supersedes
+  the previous result instead of duplicating it. Source English cues are stored
+  for **every** cue — including non-speech and failed ones — so the index map
+  stays complete and auditable, and so Phase 2b-2 can resume and generate SRT
+  from storage.
+- **`fingerprint.py` — cache identity.** sha256 over loader-normalized cues.
+
+**Cache invalidation rules**
+
+- Identity is `video_id` + `caption_fingerprint` + `model` + `prompt_version`.
+  Changing any one of them is a different identity; an old result is never
+  returned as current.
+- The fingerprint is taken over **loader-normalized** cues (post
+  `cues_from_payload`, pre-cleaning). Cleaning and dedup are deterministic, so
+  an identical fingerprint implies identical cleaned input. Cosmetic whitespace
+  differences do not miss the cache; any change to text, timing, or ordering
+  does.
+- Only a **fully completed** record is served. A partial result is persisted —
+  groundwork for Phase 2b-2 recovery — but is treated as a miss and
+  retranslated, never presented as if the job had finished.
+- Lookup uses the *configured* model and runs **before the provider is
+  constructed**, so a cache hit costs no provider call and needs no API key.
+
+**Evidence:** 96 tests pass with the `[api]` extra (66 pre-existing + 30 new);
+73 pass and 3 skip without it. Cache hits are asserted by provider call count.
+A real uvicorn run returned `cache_hit=false, provider_calls=1` then
+`cache_hit=true, provider_calls=0`.
+
+#### Phase 2b-2 — Jobs and Progressive Delivery (not started)
+
+The job system (`POST /jobs`, `GET /jobs/{id}`), a single sequential background
+worker, restart recovery, and the polling contract. The Phase 2a `status` field
+is already job-shaped (`completed` / `partial`) so these can be added without
+breaking the extension. Entry condition: measured end-to-end latency for a real
+video, which determines whether async delivery is justified at all.
 
 ### Phase 3 — Chrome Extension
 
@@ -709,12 +759,18 @@ This initial log captures current implementation choices. Status must be updated
 | --- | --- | --- |
 | Local backend | Keeps credentials, persistence, and processing on the owner’s computer and avoids cloud infrastructure. | Current decision |
 | FastAPI | Provides a small typed Python HTTP layer around the translation engine. | Implemented in Phase 2a (`subtitle-api`) |
-| SQLite | Sufficient durable storage for one user, cache reuse, and restart recovery. | Current decision; deferred to Phase 2b |
+| SQLite | Sufficient durable storage for one user, cache reuse, and restart recovery. | Implemented in Phase 2b-1 |
+| Cache implemented before the job system | The cache removes the repeat-video wait with no threads, no new endpoints, and no lifecycle states — the highest value for the least risk. Jobs introduce the project's first concurrency and are gated on measured latency. | Current decision (2026-07-25) |
+| Backend generates caption fingerprints | Derived from cues the backend already receives, so the client contract is unchanged and no client-supplied hash is trusted. | Current decision (2026-07-25) |
+| SQLite database stored outside the repository | `SUBTITLE_DB_PATH` defaults to a per-user data directory, so local translation data is never committed. | Current decision (2026-07-25) |
+| A cache hit requires no provider call or credentials | Lookup uses the configured model and runs before the provider is constructed, so a repeat request costs nothing and works without an API key. | Current decision (2026-07-25) |
+| Phase 1 translation pipeline remains unchanged | The cache wraps `translate_cues()` rather than modifying it; the nine pipeline modules are untouched, so Phase 1's validation evidence still holds. | Current decision (2026-07-25) |
+| Usage aggregated per request, not per last window | `OpenRouterProvider` overwrote `last_usage` on every call, so a multi-window run reported one window's tokens and cost as the run total. Totals now accumulate across all windows. Historical Phase 1 figures are affected — see the correction note in `docs/roadmap.md`. | Current decision (2026-07-25) |
 | Phase 2 split into 2a / 2b | Ship an extension-callable API first; defer persistence, caching, jobs, recovery, and polling so the HTTP contract is proven before storage design is committed. | Current decision (2026-07-25) |
 | Phase 1 engine unchanged; API layer is additive | A framework-free `TranslationService` wraps `pipeline.translate_cues` rather than modifying it, so the engine keeps its Phase 1 validation evidence and stays usable from the CLI. Phase 1 engine files are byte-identical after Phase 2a. | Current decision (2026-07-25) |
 | Localhost single-user service | Bound to 127.0.0.1 with an explicit CORS allowlist, no accounts, no authentication, no multi-user isolation — matching the personal-MVP scope. | Current decision (2026-07-25) |
 | Provider credentials remain environment-only | Providers read `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` from the environment themselves; the settings object never stores a key, and only its *presence* is reported by `GET /health`. Provider error text is sanitized before it reaches a response. | Current decision (2026-07-25) |
-| Synchronous `POST /translate` in Phase 2a | Simple and adequate for one local user; `status` is job-shaped so async jobs and polling can be added in Phase 2b without breaking the extension. Cost: a long video holds the connection for minutes. | Current decision; revisited in Phase 2b |
+| Synchronous `POST /translate` in Phase 2a | Simple and adequate for one local user; `status` is job-shaped so async jobs and polling can be added in Phase 2b-2 without breaking the extension. Cost: a long video holds the connection for minutes. | Current decision; revisited in Phase 2b-2 |
 | Extension owns `cue_index` | The backend preserves and echoes client cue indexes exactly and never renumbers, so the extension can map results back to its captured cues. | Current decision (2026-07-25) |
 | FastAPI as an optional `[api]` extra | Keeps the Phase 1 engine and its tests free of required third-party dependencies; the engine suite still runs when the extra is absent. | Current decision (2026-07-25) |
 | TypeScript extension | Improves contract and lifecycle safety in a changing browser integration. | Current decision |

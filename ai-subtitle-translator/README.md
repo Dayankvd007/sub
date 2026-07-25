@@ -6,8 +6,8 @@ Goal:
 Watch English YouTube videos with natural Persian subtitles inside YouTube.
 
 Current phase:
-Phase 2a — API Foundation (Completed 2026-07-25). Next: Phase 2b —
-persistence, caching, jobs, recovery, and polling.
+Phase 2b-1 — Persistence and Cache (Completed 2026-07-25). Next: Phase 2b-2 —
+jobs, background processing, recovery, and polling.
 
 - **Phase 0 — Caption Extraction** lives in `extension/`; see
   `extension/README.md` and `docs/PHASE0_EXPERIMENT_NOTES.md`. Verdict: GO
@@ -28,8 +28,13 @@ persistence, caching, jobs, recovery, and polling.
   unchanged Phase 1 engine with `GET /health` and `POST /translate`, a
   framework-free `TranslationService` layer, Pydantic contracts,
   environment-based configuration, a CORS allowlist, request caps, and
-  sanitized errors. 66 tests pass with the `[api]` extra; 47 pass and 2 skip
-  without it, so the engine keeps zero required dependencies.
+  sanitized errors.
+- **Phase 2b-1 — Persistence and Cache** adds a local SQLite cache: a repeated
+  request for the same video, captions, model, and prompt version returns the
+  stored translation with **no provider call**. The database lives in a
+  per-user data directory (`SUBTITLE_DB_PATH`), never inside the repository.
+  96 tests pass with the `[api]` extra; 73 pass and 3 skip without it, so the
+  engine keeps zero required dependencies.
 
 Quick start for the local API:
 
@@ -41,5 +46,11 @@ export ALLOWED_ORIGINS=chrome-extension://<your-id>
 subtitle-api                                           # http://127.0.0.1:8000
 ```
 
-No SQLite, caching, job system, polling, or extension UI yet — those are
-Phase 2b and Phase 3.
+No job system, background processing, polling, or extension UI yet — those are
+Phase 2b-2 and Phase 3.
+
+> **Note:** the Phase 1 token and cost figures above are under-reported — they
+> describe one translation window, not the full run. The reporting defect is
+> fixed in Phase 2b-1; the historical numbers are left unchanged pending a
+> separate correction PR. See "Known documentation corrections" in
+> `docs/roadmap.md`.

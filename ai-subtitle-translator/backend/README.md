@@ -1,4 +1,4 @@
-# Backend — Translation Engine CLI (Phase 1) + Local API (Phase 2a)
+# Backend — Translation Engine CLI (Phase 1) + Local API (Phase 2a/2b-1)
 
 Converts English subtitle cues into a natural Persian SRT, usable two ways:
 
@@ -6,9 +6,9 @@ Converts English subtitle cues into a natural Persian SRT, usable two ways:
 - **Phase 2a — local API** (`subtitle-api`): a localhost FastAPI service over
   the *same* engine, ready for the Chrome extension to call.
 
-Phase 2a is the API foundation only. SQLite, caching, the job system
-(`POST /jobs`, `GET /jobs/{id}`), recovery, and polling are **Phase 2b** and
-are deliberately not implemented here.
+Phase 2b-1 adds local SQLite persistence and a translation cache. The job
+system (`POST /jobs`, `GET /jobs/{id}`), background processing, recovery, and
+polling are **Phase 2b-2** and are deliberately not implemented here.
 
 ## What it does
 
@@ -119,7 +119,7 @@ environment — see `.env.example` for every variable.
 
 ```jsonc
 // response
-{ "video_id": "dQw4w9WgXcQ", "status": "completed",
+{ "video_id": "dQw4w9WgXcQ", "status": "completed", "cache_hit": false,
   "prompt_version": "v1", "provider": "openrouter", "model": "…",
   "stats": { "total_cues": 482, "speech_cues": 478, "non_speech_cues": 4,
              "windows": 10, "translated": 478, "failed": 0,
@@ -128,7 +128,9 @@ environment — see `.env.example` for every variable.
   "cues": [ { "cue_index": 0, "start_ms": 0, "end_ms": 1200,
               "persian_text": "…" } ],
   "srt": "1\n00:00:00,000 --> …",
-  "usage": { "prompt_tokens": 1132, "completion_tokens": 1080, "cost": 0.0019 } }
+  // usage is the total across all windows, not the last call
+  "usage": { "prompt_tokens": 11320, "completion_tokens": 10800,
+             "cost": 0.019, "calls": 10 } }
 ```
 
 Contract notes for the extension:
@@ -139,28 +141,46 @@ Contract notes for the extension:
   never translated, and anything that failed validation appears in
   `failed_indices` rather than being faked. Render gaps as "no subtitle".
 - **`status` is `"completed"` or `"partial"`.** It is job-shaped on purpose:
-  when Phase 2b adds async jobs and polling, `job_id` and further states can be
-  added without breaking this contract.
+  when Phase 2b-2 adds async jobs and polling, `job_id` and further states can
+  be added without breaking this contract.
 - **This call is synchronous** and runs the whole video in one request — expect
-  minutes for a long video. Async jobs are Phase 2b.
+  minutes for a long video. Async jobs are Phase 2b-2.
+- **Repeat requests are served from the local cache.** An identical video,
+  captions, model, and prompt version returns the stored translation with
+  `cache_hit: true` and no provider call. Changing any of those retranslates.
+  A partial result is never served as complete.
 
 Errors are always `{"error_code", "message"}`: `400 invalid_cues`,
 `413 too_many_cues` / `payload_too_large`, `422` schema violations,
 `502 provider_error` (sanitized — upstream details are never echoed),
 `500 internal_error`.
 
+## Cache (Phase 2b-1)
+
+Completed translations are stored in SQLite so reopening a video costs no
+provider call and no wait.
+
+- `SUBTITLE_DB_PATH` — database location. Defaults to a per-user data
+  directory (never inside the repository).
+- `SUBTITLE_CACHE_ENABLED` — set to `false` to always call the provider.
+
+Cache identity is `video_id` + caption fingerprint + model + `prompt_version`;
+the fingerprint is computed by the backend from the cues it receives, so the
+client sends nothing extra. A cache hit needs no API key.
+
 ## Test
 
 ```sh
-python -m pytest        # 66 tests, all offline
+python -m pytest        # 96 tests, all offline
 ```
 
 Covers the loaders (JSON3/VTT/SRT/Phase-0/API payload), cleaning,
 rolling-duplicate removal, windowing, JSON-coverage validation
 (missing/duplicate/unexpected/empty/non-JSON), SRT generation, and the full
 pipeline with the mock provider — including corrective-retry recovery and
-bounded split-on-failure. The Phase 2a suite adds the service layer and both
-endpoints: index preservation, partial results, payload/cue-count caps, CORS
+bounded split-on-failure. The Phase 2a/2b-1 suites add the service layer, both
+endpoints, persistence, fingerprinting, cache invalidation, restart safety, and
+usage aggregation: index preservation, partial results, payload/cue-count caps, CORS
 allowlist behaviour, and the guarantee that credentials and provider error
 details never reach a response. No API key and no network are required.
 
@@ -182,9 +202,9 @@ The API service defaults to the Phase 1 selection
 (`SUBTITLE_API_PROVIDER=openrouter`, `SUBTITLE_API_MODEL=google/gemini-3.1-flash-lite`).
 The CLI keeps its own separate defaults, unchanged.
 
-## Not in this phase (Phase 2b and later)
+## Not in this phase (Phase 2b-2 and later)
 
-No SQLite, caching layer, job system (`POST /jobs`, `GET /jobs/{id}`),
+No job system (`POST /jobs`, `GET /jobs/{id}`), background processing,
 restart recovery, polling, or extension UI integration. The API is written so
 those can be added additively — `status` is already job-shaped — without
 changing the fields the extension reads.

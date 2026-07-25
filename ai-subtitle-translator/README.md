@@ -6,8 +6,8 @@ Goal:
 Watch English YouTube videos with natural Persian subtitles inside YouTube.
 
 Current phase:
-Phase 2b-1 — Persistence and Cache (Completed 2026-07-25). Next: Phase 2b-2 —
-jobs, background processing, recovery, and polling.
+Phase 2b-2 — Jobs and Progressive Delivery (Completed 2026-07-25). The backend
+is complete. Next: Phase 3 — Chrome extension integration.
 
 - **Phase 0 — Caption Extraction** lives in `extension/`; see
   `extension/README.md` and `docs/PHASE0_EXPERIMENT_NOTES.md`. Verdict: GO
@@ -33,8 +33,15 @@ jobs, background processing, recovery, and polling.
   request for the same video, captions, model, and prompt version returns the
   stored translation with **no provider call**. The database lives in a
   per-user data directory (`SUBTITLE_DB_PATH`), never inside the repository.
-  96 tests pass with the `[api]` extra; 73 pass and 3 skip without it, so the
-  engine keeps zero required dependencies.
+- **Phase 2b-2 — Jobs and Progressive Delivery** adds `POST /jobs` and
+  `GET /jobs/{id}`: a single background worker thread translates one video at a
+  time and commits **every translation window to SQLite as it finishes**, so
+  the extension can poll for validated Persian cues while the rest is still
+  being translated, and a crash loses at most the window in flight. SQLite is
+  the durable queue — on startup the worker re-queues anything left unfinished
+  and resumes it without re-translating a single completed cue. 153 tests pass
+  with the `[api]` extra; 112 pass and 4 skip without it, so the engine keeps
+  zero required dependencies.
 
 Quick start for the local API:
 
@@ -46,8 +53,8 @@ export ALLOWED_ORIGINS=chrome-extension://<your-id>
 subtitle-api                                           # http://127.0.0.1:8000
 ```
 
-No job system, background processing, polling, or extension UI yet — those are
-Phase 2b-2 and Phase 3.
+No extension UI yet — the subtitle button, TextTrack rendering, and the Persian
+RTL overlay are Phase 3.
 
 > **Note:** the Phase 1 token and cost figures above are under-reported — they
 > describe one translation window, not the full run. The reporting defect is

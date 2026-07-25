@@ -14,7 +14,12 @@ try:
     from fastapi.testclient import TestClient
 
     from subtitle_translator.api.app import create_app
-    from subtitle_translator.api.deps import get_service, get_settings
+    from subtitle_translator.api.deps import (
+        get_job_service,
+        get_service,
+        get_settings,
+        get_worker,
+    )
     from subtitle_translator.api.settings import Settings
 
     FASTAPI_AVAILABLE = True
@@ -37,11 +42,15 @@ def make_settings(**overrides):
     return Settings(**defaults)
 
 
-def make_client(settings=None, provider_factory=None, repository=None):
+def make_client(settings=None, provider_factory=None, repository=None, job_service=None, worker=None):
     """Build a TestClient wired to MockProvider — offline, no key, no cost.
 
     `repository` is None by default so the Phase 2a tests keep exercising the
     uncached path; the cache tests pass a tmp_path-backed Repository.
+
+    The job dependencies are *always* overridden, defaulting to None. Without
+    that, an un-overridden job route would fall through to the real settings and
+    touch the developer's actual database.
     """
     settings = settings or make_settings()
     app = create_app(settings)
@@ -55,6 +64,8 @@ def make_client(settings=None, provider_factory=None, repository=None):
 
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_service] = lambda: service
+    app.dependency_overrides[get_job_service] = lambda: job_service
+    app.dependency_overrides[get_worker] = lambda: worker
     return TestClient(app)
 
 

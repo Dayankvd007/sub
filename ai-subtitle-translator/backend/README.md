@@ -1,4 +1,4 @@
-# Backend — Translation Engine CLI (Phase 1) + Local API (Phase 2a/2b-1)
+# Backend — Translation Engine CLI (Phase 1) + Local API (Phase 2a/2b-1/2b-2)
 
 Converts English subtitle cues into a natural Persian SRT, usable two ways:
 
@@ -6,9 +6,9 @@ Converts English subtitle cues into a natural Persian SRT, usable two ways:
 - **Phase 2a — local API** (`subtitle-api`): a localhost FastAPI service over
   the *same* engine, ready for the Chrome extension to call.
 
-Phase 2b-1 adds local SQLite persistence and a translation cache. The job
-system (`POST /jobs`, `GET /jobs/{id}`), background processing, recovery, and
-polling are **Phase 2b-2** and are deliberately not implemented here.
+Phase 2b-1 adds local SQLite persistence and a translation cache. Phase 2b-2
+adds background translation jobs (`POST /jobs`, `GET /jobs/{id}`) with
+progressive delivery, polling, and restart recovery.
 
 ## What it does
 
@@ -140,20 +140,72 @@ Contract notes for the extension:
 - **The response may omit indexes you sent.** Non-speech cues (`[Music]`) are
   never translated, and anything that failed validation appears in
   `failed_indices` rather than being faked. Render gaps as "no subtitle".
-- **`status` is `"completed"` or `"partial"`.** It is job-shaped on purpose:
-  when Phase 2b-2 adds async jobs and polling, `job_id` and further states can
-  be added without breaking this contract.
+- **`status` is `"completed"` or `"partial"`.**
 - **This call is synchronous** and runs the whole video in one request — expect
-  minutes for a long video. Async jobs are Phase 2b-2.
+  minutes for a long video. For progressive results, use `POST /jobs` below.
+  This endpoint returns `409 job_in_progress` if a background job is already
+  translating the same video, captions, model, and prompt version.
 - **Repeat requests are served from the local cache.** An identical video,
   captions, model, and prompt version returns the stored translation with
   `cache_hit: true` and no provider call. Changing any of those retranslates.
   A partial result is never served as complete.
 
+### `POST /jobs` (Phase 2b-2)
+
+Same request body as `POST /translate`. Returns immediately with a `job_id`
+instead of holding the connection for the whole video.
+
+```jsonc
+// 201 Created — new job
+{ "job_id": 42, "video_id": "dQw4w9WgXcQ", "status": "queued",
+  "cache_hit": false, "total_cues": 482, "speech_cues": null,
+  "completed_cues": 0, "prompt_version": "v1", "provider": "openrouter",
+  "model": "…", "cues": [], "created_at": "2026-07-25T…" }
+```
+
+Returns **200** rather than 201 when nothing was created:
+
+| Existing state for this cache identity | Result |
+|---|---|
+| completed | `cache_hit: true`, every cue inline — no worker, no provider, no polling |
+| queued / processing | the same `job_id`; a second translation is never started |
+| partial / failed | resumed — completed cues are kept and only the rest is translated |
+
+### `GET /jobs/{id}` (Phase 2b-2)
+
+Poll roughly every 2 s while `done` is false. `?after_cue_index=N` returns only
+newer cues; `?include_srt=true` renders the full subtitle file.
+
+```jsonc
+{ "job_id": 42, "video_id": "dQw4w9WgXcQ", "status": "processing",
+  "done": false,
+  "progress": { "total_cues": 482, "speech_cues": 478, "completed_cues": 100,
+                "failed_cues": 0, "percent": 20.9 },
+  "cues": [ { "cue_index": 51, "start_ms": …, "end_ms": …, "persian_text": "…" } ],
+  "next_cursor": 100, "failed_indices": [], "error": null, "srt": null }
+```
+
+Statuses: `queued` (waiting) → `processing` (translating, cues arriving) →
+`completed` (all speech cues done) / `partial` (finished, some cues failed) /
+`failed` (terminal error, translated cues kept). `done` is true for the last
+three.
+
+Polling contract for the extension:
+
+- **Only validated cues are ever returned.** Failed indexes appear in
+  `failed_indices`, never as invented Persian.
+- **Cursor + client-side dedup.** Cues normally arrive in video order, but
+  after `done` becomes true, make **one final read with no cursor** and
+  reconcile — that covers any cue that completed out of order.
+- **A read never starts work.** `GET` is pure; only `POST /jobs` queues.
+- **Resume is just re-posting.** The same payload after a failure resumes the
+  job rather than restarting it.
+
 Errors are always `{"error_code", "message"}`: `400 invalid_cues`,
-`413 too_many_cues` / `payload_too_large`, `422` schema violations,
-`502 provider_error` (sanitized — upstream details are never echoed),
-`500 internal_error`.
+`404 job_not_found`, `409 job_in_progress`, `413 too_many_cues` /
+`payload_too_large`, `422` schema violations, `502 provider_error` (sanitized —
+upstream details are never echoed), `503 jobs_unavailable` (persistence
+disabled), `500 internal_error`.
 
 ## Cache (Phase 2b-1)
 
@@ -168,10 +220,38 @@ Cache identity is `video_id` + caption fingerprint + model + `prompt_version`;
 the fingerprint is computed by the backend from the cues it receives, so the
 client sends nothing extra. A cache hit needs no API key.
 
+## Jobs and recovery (Phase 2b-2)
+
+A `videos` record *is* a job record — `videos.id` is the `job_id` — so the
+UNIQUE cache identity doubles as the job's idempotency key and the same video
+can never be translated twice at once.
+
+One background thread runs one job at a time, sequentially, **committing each
+translation window to SQLite as it finishes**. That single property gives both
+features at once: cues can be polled while the rest is still translating, and a
+crash loses at most the window in flight.
+
+**SQLite is the queue of record.** The in-memory queue is only a doorbell and is
+allowed to die with the process: on startup the worker sweeps every job left
+`queued`/`processing` and re-queues it. Resume reloads the stored source cues,
+re-derives the same deterministic windows, and translates only what has no
+committed translation — so **completed cues are never paid for twice**.
+
+Failure handling is bounded at every level: malformed model output gets the
+Phase 1 corrective retry then split (ending `partial`); a provider transport
+failure is retried twice (2 s, 8 s) from the last committed window before the
+job ends `failed`; and a job interrupted more than
+`SUBTITLE_JOB_MAX_RESUME_ATTEMPTS` times is failed rather than retried forever.
+In every case, cues already translated remain readable.
+
+- `SUBTITLE_JOB_WORKER_ENABLED` — run the worker in this process (default true).
+- `SUBTITLE_JOB_MAX_RESUME_ATTEMPTS` — restart resumes before giving up (3).
+- `SUBTITLE_JOB_PROVIDER_RETRIES` — provider retries per job (2).
+
 ## Test
 
 ```sh
-python -m pytest        # 96 tests, all offline
+python -m pytest        # 153 tests, all offline
 ```
 
 Covers the loaders (JSON3/VTT/SRT/Phase-0/API payload), cleaning,
@@ -182,7 +262,13 @@ bounded split-on-failure. The Phase 2a/2b-1 suites add the service layer, both
 endpoints, persistence, fingerprinting, cache invalidation, restart safety, and
 usage aggregation: index preservation, partial results, payload/cue-count caps, CORS
 allowlist behaviour, and the guarantee that credentials and provider error
-details never reach a response. No API key and no network are required.
+details never reach a response. The Phase 2b-2 suites add the schema migration,
+job lifecycle, window-by-window commits, resume without re-translation, provider
+retry, the restart-recovery sweep and its attempt limit, both job endpoints, and
+duplicate-free polling. No API key and no network are required.
+
+The engine keeps **zero required third-party dependencies**: without the `[api]`
+extra, 112 tests pass and 4 skip.
 
 ## Provider / model choice
 
@@ -202,9 +288,10 @@ The API service defaults to the Phase 1 selection
 (`SUBTITLE_API_PROVIDER=openrouter`, `SUBTITLE_API_MODEL=google/gemini-3.1-flash-lite`).
 The CLI keeps its own separate defaults, unchanged.
 
-## Not in this phase (Phase 2b-2 and later)
+## Not in this phase (Phase 3 and later)
 
-No job system (`POST /jobs`, `GET /jobs/{id}`), background processing,
-restart recovery, polling, or extension UI integration. The API is written so
-those can be added additively — `status` is already job-shaped — without
-changing the fields the extension reads.
+No extension UI integration: the subtitle button, TextTrack/VTTCue rendering,
+the RTL overlay, and SPA/ad/fullscreen lifecycle handling are Phase 3 and
+Phase 4. Job cancellation (`DELETE /jobs/{id}`), record retention/pruning, and
+`GET /jobs/{id}/srt` as a separate endpoint are deliberately out of scope —
+`GET /jobs/{id}?include_srt=true` already covers export.

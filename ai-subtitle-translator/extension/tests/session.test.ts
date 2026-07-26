@@ -110,9 +110,18 @@ function makeSession(options: {
     doc: document,
     readTitle: () => 'A test video',
   });
+  live.push(session);
 
   return { session, client, capture };
 }
+
+/**
+ * Sessions are disposed after every test. An undisposed session keeps a
+ * document-level click listener, so a later test's click would be handled by
+ * several sessions at once. Production cannot hit this: `content.ts` disposes
+ * the previous session synchronously before constructing the next one.
+ */
+const live: VideoSession[] = [];
 
 function control(): HTMLButtonElement | null {
   return document.getElementById(CONTROL_ID) as HTMLButtonElement | null;
@@ -128,6 +137,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  while (live.length) live.pop()?.dispose();
   document.body.innerHTML = '';
 });
 
@@ -190,6 +200,7 @@ describe('start behaviour', () => {
       capture: vi.fn().mockResolvedValue(captureOk()),
       doc: document,
     });
+    live.push(session);
     await session.init();
     expect(session.currentState).toBe('backend-unavailable');
 
@@ -359,6 +370,7 @@ describe('disposal', () => {
       capture: vi.fn().mockResolvedValue(captureOk()),
       doc: document,
     });
+    live.push(session);
 
     const init = session.init();
     session.dispose();
@@ -381,6 +393,7 @@ describe('disposal', () => {
       capture: vi.fn().mockReturnValue(new Promise((r) => (resolveCapture = r))),
       doc: document,
     });
+    live.push(session);
     await session.init();
 
     control()!.click();

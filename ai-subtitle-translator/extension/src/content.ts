@@ -14,6 +14,7 @@
  * the Phase 0 main-world extractor, and only when the user clicks.
  */
 
+import { log } from './debug';
 import { CAPTURE_FOR_TAB, type CaptureForTabResult } from './messages';
 import { VideoSession } from './session';
 
@@ -55,9 +56,14 @@ let session: VideoSession | null = null;
 /** Ask the service worker to run the Phase 0 extractor against *this* tab. */
 function captureForThisTab(): Promise<CaptureForTabResult> {
   return new Promise((resolve) => {
+    log('capture-message-sent');
     try {
       chrome.runtime.sendMessage({ type: CAPTURE_FOR_TAB }, (response: CaptureForTabResult) => {
         if (chrome.runtime.lastError) {
+          log('workflow-error', {
+            stage: 'capture-message',
+            error: chrome.runtime.lastError.message ?? 'unknown messaging error',
+          });
           resolve({
             ok: false,
             kind: 'extraction-failed',
@@ -65,9 +71,29 @@ function captureForThisTab(): Promise<CaptureForTabResult> {
           });
           return;
         }
+        if (!response) {
+          // A handler that returns nothing leaves the callback with undefined;
+          // resolving explicitly stops the workflow hanging forever.
+          log('workflow-error', { stage: 'capture-message', error: 'empty response' });
+          resolve({
+            ok: false,
+            kind: 'extraction-failed',
+            error: 'The background worker returned no result.',
+          });
+          return;
+        }
+        log('capture-message-received', {
+          ok: response.ok,
+          cues: response.ok ? response.cues.length : 0,
+          kind: response.ok ? null : response.kind,
+        });
         resolve(response);
       });
     } catch (err) {
+      log('workflow-error', {
+        stage: 'capture-message',
+        error: err instanceof Error ? err.message : String(err),
+      });
       resolve({
         ok: false,
         kind: 'extraction-failed',

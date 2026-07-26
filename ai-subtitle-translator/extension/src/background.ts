@@ -16,6 +16,7 @@
  * content script's VideoSession.
  */
 
+import { log, redactUrl } from './debug';
 import {
   BACKEND_FETCH,
   CAPTURE_FOR_TAB,
@@ -133,6 +134,8 @@ const NO_CAPTION_STAGES = new Set(['find-caption-tracks', 'select-english-track'
 async function captureForTab(sender: chrome.runtime.MessageSender): Promise<CaptureForTabResult> {
   const tabId = sender.tab?.id;
   const url = sender.tab?.url;
+  log('capture-message-received', { hasTabId: typeof tabId === 'number', isWatchPage: isYouTubeWatchUrl(url) });
+
   if (typeof tabId !== 'number' || !isYouTubeWatchUrl(url)) {
     return { ok: false, kind: 'not-a-watch-page', error: 'The requesting tab is not a YouTube watch page.' };
   }
@@ -144,8 +147,13 @@ async function captureForTab(sender: chrome.runtime.MessageSender): Promise<Capt
 
   let extraction: MainWorldExtractionResult | null;
   try {
+    log('extractor-start', { tabId, videoId });
     extraction = await runExtraction(tabId);
   } catch (err) {
+    log('workflow-error', {
+      stage: 'extractor-injection',
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       ok: false,
       kind: 'extraction-failed',
@@ -154,8 +162,22 @@ async function captureForTab(sender: chrome.runtime.MessageSender): Promise<Capt
   }
 
   if (!extraction) {
+    log('workflow-error', { stage: 'extractor', error: 'injection returned no result' });
     return { ok: false, kind: 'extraction-failed', error: 'The main-world extractor returned nothing.' };
   }
+
+  // Never log the fetched URL's query string: it carries YouTube session
+  // parameters. Origin and path only.
+  log('extractor-result', {
+    ok: extraction.ok,
+    stage: extraction.stage,
+    trackKind: extraction.selectedTrack?.kind ?? null,
+    availableTracks: extraction.availableTracks?.length ?? 0,
+    rawEvents: extraction.rawEventCount ?? 0,
+    url: redactUrl(extraction.fetchedUrl),
+    error: extraction.ok ? undefined : extraction.error,
+  });
+
   if (!extraction.ok) {
     return {
       ok: false,
@@ -194,6 +216,9 @@ async function backendBaseUrl(): Promise<string> {
 /** Forward exactly one request. No retries here — retry policy is the caller's. */
 async function backendFetch(message: BackendFetchMessage): Promise<BackendFetchResult> {
   const base = await backendBaseUrl();
+  if (message.path.startsWith('/jobs') && message.method === 'POST') {
+    log('post-jobs-start', { path: message.path });
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), message.timeoutMs);
 
@@ -232,6 +257,9 @@ async function backendFetch(message: BackendFetchMessage): Promise<BackendFetchR
       };
     }
 
+    if (message.path.startsWith('/jobs')) {
+      log('post-jobs-result', { method: message.method, path: message.path, status: response.status });
+    }
     return { ok: true, status: response.status, data };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';

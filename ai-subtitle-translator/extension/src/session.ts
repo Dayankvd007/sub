@@ -27,6 +27,7 @@ import type { JobCreateRequest } from './apiTypes';
 import type { TranslatedCue } from './apiTypes';
 import type { CaptureForTabResult } from './messages';
 import { BackendClient } from './backendClient';
+import { log } from './debug';
 import { JobController } from './jobController';
 import { RtlOverlay } from './overlay';
 import { SubtitleControl } from './subtitleControl';
@@ -65,7 +66,11 @@ export class VideoSession {
   ) {
     this.doc = deps.doc ?? document;
     this.client = deps.client ?? new BackendClient();
-    this.control = new SubtitleControl(() => void this.handleActivate());
+    this.control = new SubtitleControl(() => {
+      // A rejection here would otherwise be an unhandled promise: the click
+      // would appear to do nothing, which is exactly the failure this guards.
+      this.handleActivate().catch((err: unknown) => this.failWorkflow('activate', err));
+    });
     this.track = new SubtitleTrack((text) => this.renderText(text));
   }
 
@@ -120,11 +125,17 @@ export class VideoSession {
     this.control.setState(state, this.context);
   }
 
-  private async checkHealth(): Promise<void> {
+  /** Probe the backend without writing any state. */
+  private async probeHealth(): Promise<boolean> {
     const result = await this.client.health();
+    return result.ok;
+  }
+
+  private async checkHealth(): Promise<void> {
+    const healthy = await this.probeHealth();
     if (!this.alive()) return;
 
-    if (!result.ok) {
+    if (!healthy) {
       this.setState('backend-unavailable');
       return;
     }
@@ -143,12 +154,36 @@ export class VideoSession {
       return;
     }
 
-    if (this.state === 'backend-unavailable') {
-      await this.checkHealth();
-      if (!this.alive() || this.state === 'backend-unavailable') return;
+    const wasUnavailable = this.state === 'backend-unavailable';
+
+    // Move the control *before* any await. A workflow that dies later must
+    // never be indistinguishable from a click that was ignored — that
+    // ambiguity is what made the first gate failure so hard to diagnose.
+    this.showing = true;
+    this.setState('translating', { percent: 0 });
+
+    if (wasUnavailable) {
+      const healthy = await this.probeHealth();
+      if (!this.alive()) return;
+      if (!healthy) {
+        this.showing = false;
+        this.setState('backend-unavailable');
+        return;
+      }
     }
 
     await this.startTranslation();
+  }
+
+  /** One place where an unexpected failure becomes a visible, logged state. */
+  private failWorkflow(stage: string, error: unknown): void {
+    log('workflow-error', {
+      stage,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (!this.alive()) return;
+    this.showing = false;
+    this.setState('failed');
   }
 
   private toggleDisplay(): void {
@@ -166,6 +201,7 @@ export class VideoSession {
     this.started = true;
     this.showing = true;
     this.setState('translating', { percent: 0 });
+    log('session-start', { videoId: this.videoId });
 
     const capture = await this.deps.capture();
     if (!this.alive()) return;
@@ -173,17 +209,24 @@ export class VideoSession {
     if (!capture.ok) {
       this.started = false;
       this.setState(capture.kind === 'no-captions' ? 'no-captions' : 'failed');
-      console.debug('[ai-subtitle-translator] capture failed:', capture.error);
+      log('workflow-error', { stage: 'capture', kind: capture.kind, error: capture.error });
       return;
     }
 
     // The extractor ran against this tab, but the user may have navigated
     // between the click and the result.
-    if (capture.videoId !== this.videoId) return;
+    if (capture.videoId !== this.videoId) {
+      log('workflow-error', {
+        stage: 'capture',
+        error: 'capture returned a different video; ignoring',
+      });
+      return;
+    }
 
     if (!this.mountPlayerParts()) {
       this.started = false;
       this.setState('failed');
+      log('workflow-error', { stage: 'mount', error: 'no #movie_player video element found' });
       return;
     }
 
@@ -202,7 +245,13 @@ export class VideoSession {
       isActive: () => this.alive(),
     });
 
-    await this.jobs.start(payload);
+    log('post-jobs-start', { videoId: this.videoId, cues: payload.cues.length });
+    try {
+      await this.jobs.start(payload);
+      log('post-jobs-result', { state: this.state, jobId: this.jobs?.currentJobId ?? null });
+    } catch (err) {
+      this.failWorkflow('post-jobs', err);
+    }
   }
 
   /** Attach the overlay and timing track to the live player. */

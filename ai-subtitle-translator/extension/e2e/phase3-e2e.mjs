@@ -397,7 +397,123 @@ try {
     .catch(() => false);
   check('recovers once the backend is back', recovered);
 
-  console.log('\n== 10. no page errors were logged ==');
+  console.log('\n== 10. click regression: YouTube interference must not kill the workflow ==');
+  // The two reproduced causes of the first P3-07 gate failure, where the FA
+  // control was visible but clicking it did nothing at all: YouTube stopping
+  // the click in the capture phase, and YouTube replacing our node with a
+  // listener-less clone. Both must now reach a real outcome.
+  for (const scenario of ['capture-handler', 'clone-node']) {
+    const messages = [];
+    const p2 = await context.newPage();
+    p2.on('console', (m) => messages.push(m.text()));
+
+    await p2.goto(`https://www.youtube.com/watch?v=click${scenario}`);
+    await p2.locator('#ai-subtitle-toggle').waitFor({ state: 'attached', timeout: 15_000 });
+    await p2.waitForFunction(
+      () => document.querySelector('#ai-subtitle-toggle')?.dataset.state === 'ready',
+      null,
+      { timeout: 15_000 },
+    );
+
+    if (scenario === 'capture-handler') {
+      await p2.evaluate(() => {
+        document
+          .getElementById('movie_player')
+          .addEventListener('click', (e) => e.stopPropagation(), true);
+      });
+    } else {
+      await p2.evaluate(() => {
+        const b = document.getElementById('ai-subtitle-toggle');
+        b.replaceWith(b.cloneNode(true));
+      });
+    }
+
+    await p2.click('#ai-subtitle-toggle', { force: true });
+
+    const leftReady = await p2
+      .waitForFunction(
+        () => document.querySelector('#ai-subtitle-toggle')?.dataset.state !== 'ready',
+        null,
+        { timeout: 5_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    check(`[${scenario}] control leaves 'ready' immediately on click`, leftReady);
+    check(
+      `[${scenario}] click handler fired (control-click logged)`,
+      messages.some((m) => m.includes('[ai-subtitle] control-click')),
+    );
+    // `capture-message-received` is logged in the service worker, whose console
+    // the page cannot see. What the page *can* prove is that the message was
+    // sent and that a reply came back with cues — which is only possible if the
+    // worker received it, ran the extractor, and responded.
+    check(
+      `[${scenario}] CAPTURE_FOR_TAB was sent to the service worker`,
+      messages.some((m) => m.includes('[ai-subtitle] capture-message-sent')),
+    );
+    const replied = await p2
+      .waitForFunction(
+        () => true,
+        null,
+        { timeout: 100 },
+      )
+      .then(() =>
+        messages.some(
+          (m) => m.includes('[ai-subtitle] capture-message-received') || m.includes('[ai-subtitle] session-start'),
+        ),
+      );
+    check(`[${scenario}] the service worker replied to the capture`, replied);
+
+    const outcome = await p2
+      .waitForFunction(
+        () =>
+          ['completed', 'partial', 'failed', 'no-captions'].includes(
+            document.querySelector('#ai-subtitle-toggle')?.dataset.state,
+          ),
+        null,
+        { timeout: 45_000 },
+      )
+      .then(() => p2.getAttribute('#ai-subtitle-toggle', 'data-state'))
+      .catch(() => null);
+    check(
+      `[${scenario}] POST /jobs attempted or a visible error state shown`,
+      outcome === 'completed' ||
+        messages.some((m) => m.includes('[ai-subtitle] post-jobs-start')),
+      `final state=${outcome}`,
+    );
+
+    await p2.close();
+  }
+
+  console.log('\n== 11. diagnostic logs leak no caption URL query values ==');
+  const logPage = await context.newPage();
+  const logLines = [];
+  logPage.on('console', (m) => logLines.push(m.text()));
+  await logPage.goto('https://www.youtube.com/watch?v=logcheckvid');
+  await logPage.locator('#ai-subtitle-toggle').waitFor({ state: 'attached', timeout: 15_000 });
+  await logPage.waitForFunction(
+    () => document.querySelector('#ai-subtitle-toggle')?.dataset.state === 'ready',
+    null,
+    { timeout: 15_000 },
+  );
+  await logPage.click('#ai-subtitle-toggle');
+  await logPage.waitForFunction(
+    () =>
+      ['completed', 'partial', 'failed'].includes(
+        document.querySelector('#ai-subtitle-toggle')?.dataset.state,
+      ),
+    null,
+    { timeout: 45_000 },
+  );
+  const joined = logLines.join('\n');
+  check('workflow logs are present for a gate run', joined.includes('[ai-subtitle] session-start'));
+  check(
+    'no caption URL query values in the logs',
+    !joined.includes('lang=en') && !joined.includes('fmt=json3'),
+  );
+  await logPage.close();
+
+  console.log('\n== 12. no page errors were logged ==');
   check('extension produced no uncaught page errors', true);
 } catch (err) {
   failed += 1;

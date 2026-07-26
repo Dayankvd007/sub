@@ -7,7 +7,7 @@ const dist = join(root, 'dist');
 
 mkdirSync(dist, { recursive: true });
 
-const filesToCopy = ['manifest.json', 'popup.html'];
+const filesToCopy = ['manifest.json', 'popup.html', 'overlay.css'];
 for (const file of filesToCopy) {
   copyFileSync(join(root, file), join(dist, file));
 }

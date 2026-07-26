@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Subtitle Translator — Phase 0 Caption Extraction Experiment",
-  "version": "0.1.0",
-  "description": "Feasibility experiment only: capture structured English YouTube caption cues (cue_index, start_ms, end_ms, english_text) from the browser. No translation, no backend.",
+  "name": "AI Subtitle Translator",
+  "version": "0.2.0",
+  "description": "Watch English YouTube videos with natural Persian subtitles, translated by your own local backend. Captions are read in the browser; nothing is uploaded to a cloud service.",
   "action": {
     "default_popup": "popup.html"
   },
@@ -13,9 +13,10 @@
     {
       "matches": ["https://www.youtube.com/*"],
       "js": ["content.js"],
+      "css": ["overlay.css"],
       "run_at": "document_idle"
     }
   ],
   "permissions": ["scripting", "storage", "tabs", "downloads"],
-  "host_permissions": ["https://www.youtube.com/*"]
+  "host_permissions": ["https://www.youtube.com/*", "http://127.0.0.1/*"]
 }

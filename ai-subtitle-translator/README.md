@@ -6,9 +6,10 @@ Goal:
 Watch English YouTube videos with natural Persian subtitles inside YouTube.
 
 Current phase:
-Phase 2b-2 — Jobs and Progressive Delivery (Completed and merged 2026-07-25).
-**The backend is complete.** Next: Phase 3 — Chrome extension integration,
-which is **Not Started**.
+Phase 3 — Chrome Extension Integration (**in progress**). P3-01 through P3-06
+are implemented and tested; the P3-07 exit gate is **not yet passed** — it needs
+the owner's own Chrome on one real manually captioned and one real
+auto-captioned YouTube video. Phase 4 has not begun.
 
 - **Phase 0 — Caption Extraction** lives in `extension/`; see
   `extension/README.md` and `docs/PHASE0_EXPERIMENT_NOTES.md`. Verdict: GO
@@ -55,18 +56,41 @@ which is **Not Started**.
   resumed window boundaries and context may differ from the first run. That is
   what makes a resume cost zero duplicate provider calls.
 
-Quick start for the local API:
+- **Phase 3 — Chrome Extension Integration** connects the two halves: an
+  in-player **FA** button with eight states, backend calls proxied through the
+  MV3 service worker, `POST /jobs` with the client's `cue_index` preserved,
+  ~2 s cursor polling with duplicate-proof cue delivery, a hidden `<track>` as
+  the timing source, and a right-to-left Persian overlay inside the player.
+  Translation starts **only on an explicit click**. 123 extension tests pass
+  offline, and a Playwright harness drives the *built* extension in real
+  Chromium against the real backend — 38 checks, including real VTTCue
+  activation from the media clock, an 83 ms cache hit, and no leaked controls,
+  overlays, or TextTracks after eight rapid SPA navigations. See
+  `docs/PHASE3_EXTENSION_NOTES.md`.
+
+**Phase 3 is not finished.** The P3-07 gate requires the owner to run one real
+manually captioned and one real auto-captioned YouTube video in their own
+Chrome, covering pause, resume, seek, 0.75x/1x/1.5x/2x playback, fullscreen, and
+in-app navigation. Ads, subtitle style preferences, and reliability polish are
+Phase 4 and have not been started.
+
+Quick start:
 
 ```sh
+# backend
 cd backend
 python -m pip install -e ".[api,dev]"
 export OPENROUTER_API_KEY=...                          # or use .env
-export ALLOWED_ORIGINS=chrome-extension://<your-id>
+export ALLOWED_ORIGINS=chrome-extension://<your-id>    # from chrome://extensions
 subtitle-api                                           # http://127.0.0.1:8000
+
+# extension
+cd ../extension
+npm install && npm run build                           # load dist/ unpacked
 ```
 
-No extension UI yet — the subtitle button, TextTrack rendering, and the Persian
-RTL overlay are Phase 3.
+Then open a YouTube video with English captions and click **FA** in the player
+control bar. See `extension/README.md` for the full setup.
 
 > **Note:** the Phase 1 token and cost figures above are under-reported — they
 > describe one translation window, not the full run. The reporting defect is

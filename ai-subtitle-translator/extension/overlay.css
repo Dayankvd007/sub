@@ -1,0 +1,82 @@
+/*
+ * Styles for the two nodes this extension owns inside the YouTube page: the
+ * subtitle control and the Persian overlay. Minimal by intent (roadmap P3-06):
+ * legibility only. Font-size preferences, condensation, and layout tuning are
+ * Phase 4 (P4-07) and deliberately absent.
+ */
+
+/* --- subtitle control --------------------------------------------------- */
+
+.ai-subtitle-toggle {
+  /* Inside .ytp-right-controls the .ytp-button class supplies sizing and
+     hover behaviour; these rules only cover what YouTube does not. */
+  color: #fff;
+  font: 500 12px/1 'Roboto', Arial, sans-serif;
+  letter-spacing: 0.4px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  opacity: 0.9;
+}
+
+.ai-subtitle-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ai-subtitle-toggle--active {
+  /* Mirrors how YouTube marks its own captions button as on. */
+  border-bottom: 2px solid #f00;
+}
+
+/* The fallback control sits outside the player, on the page's own background,
+   so it cannot inherit the white-on-video colour above. */
+#ai-subtitle-fallback-host .ai-subtitle-toggle {
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  padding: 4px 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, #0000001a);
+  border-radius: 18px;
+}
+
+/* --- Persian subtitle overlay ------------------------------------------- */
+
+#ai-subtitle-overlay {
+  position: absolute;
+  /* Clears .ytp-chrome-bottom so the player controls stay usable. */
+  bottom: 9%;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: 80%;
+  z-index: 29; /* above the video, below YouTube's control chrome */
+
+  /* Never swallow a click meant for play/pause: the overlay spans the player. */
+  pointer-events: none;
+
+  direction: rtl;
+  /* Isolate keeps Persian ordering correct when a cue mixes in Latin text. */
+  unicode-bidi: isolate;
+  text-align: center;
+
+  font-family: 'Vazirmatn', 'Noto Naskh Arabic', 'Segoe UI', Tahoma, sans-serif;
+  font-size: clamp(16px, 2.2vw, 30px);
+  line-height: 1.45;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+#ai-subtitle-overlay .ai-subtitle-line {
+  display: inline-block;
+  padding: 0.1em 0.4em;
+  background: rgba(8, 8, 8, 0.75);
+  border-radius: 4px;
+}
+
+/* Hidden rather than empty, so no translucent box floats over the video
+   between cues. */
+#ai-subtitle-overlay[hidden] {
+  display: none;
+}

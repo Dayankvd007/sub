@@ -1,14 +1,21 @@
 /**
  * Isolated-world content script.
- * Responsibility: detect YouTube watch pages and the active video ID,
- * including changes caused by YouTube's single-page-app navigation, and
- * publish that status to chrome.storage.local so the popup can display it
- * without needing the page to be freshly reloaded.
  *
- * This script deliberately does NOT touch captions. Caption extraction is
- * a separate, on-demand step performed by the main-world extractor when the
- * user clicks "Capture Captions" in the popup.
+ * Phase 0 responsibility (unchanged): detect YouTube watch pages and the
+ * active video ID, including YouTube's single-page-app navigation, and publish
+ * that to chrome.storage.local so the debug popup can read it.
+ *
+ * Phase 3 responsibility (added): own exactly one VideoSession for the current
+ * video, and destroy it before the next one is created. This file is the only
+ * place a session is constructed or disposed, so "one session per video" is a
+ * property of a single ~20-line function rather than a convention.
+ *
+ * Caption extraction still does not happen here — the service worker injects
+ * the Phase 0 main-world extractor, and only when the user clicks.
  */
+
+import { CAPTURE_FOR_TAB, type CaptureForTabResult } from './messages';
+import { VideoSession } from './session';
 
 interface WatchStatus {
   isWatchPage: boolean;
@@ -41,14 +48,79 @@ function currentStatus(): WatchStatus {
   };
 }
 
+// --- Phase 3: session ownership -------------------------------------------
+
+let session: VideoSession | null = null;
+
+/** Ask the service worker to run the Phase 0 extractor against *this* tab. */
+function captureForThisTab(): Promise<CaptureForTabResult> {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: CAPTURE_FOR_TAB }, (response: CaptureForTabResult) => {
+        if (chrome.runtime.lastError) {
+          resolve({
+            ok: false,
+            kind: 'extraction-failed',
+            error: chrome.runtime.lastError.message ?? 'Background worker unreachable.',
+          });
+          return;
+        }
+        resolve(response);
+      });
+    } catch (err) {
+      resolve({
+        ok: false,
+        kind: 'extraction-failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+}
+
+function readVideoTitle(): string | null {
+  const heading = document.querySelector('h1.ytd-watch-metadata, h1.title');
+  const text = heading?.textContent?.trim();
+  if (text) return text;
+  return document.title.replace(/\s*-\s*YouTube\s*$/, '').trim() || null;
+}
+
+/**
+ * The single point where sessions begin and end. Disposal is synchronous and
+ * happens *before* the replacement exists, so two sessions can never overlap.
+ */
+function switchTo(videoId: string | null): void {
+  session?.dispose();
+  session = null;
+
+  if (videoId === null) return;
+
+  session = new VideoSession(videoId, {
+    capture: captureForThisTab,
+    readTitle: readVideoTitle,
+  });
+  void session.init();
+}
+
+// --- lifecycle wiring ------------------------------------------------------
+
 let lastVideoId: string | null = null;
 
 function publishStatus(reason: string): void {
   const status = currentStatus();
+
   if (status.videoId !== lastVideoId) {
-    console.log(`[Phase0 caption experiment] video changed (${reason}):`, lastVideoId, '->', status.videoId);
+    console.log(
+      `[ai-subtitle-translator] video changed (${reason}):`,
+      lastVideoId,
+      '->',
+      status.videoId,
+    );
     lastVideoId = status.videoId;
+    // Video identity changed: tear down the old session before anything new
+    // can attach to the new video.
+    switchTo(status.videoId);
   }
+
   chrome.storage.local.set({ watchStatus: status }).catch(() => {
     // The extension context can be invalidated mid-navigation (e.g. reload);
     // this is expected and not worth surfacing as an error.
@@ -71,3 +143,7 @@ setInterval(() => {
     publishStatus('url-poll-fallback');
   }
 }, 1000);
+
+// Tab teardown: stop polling and remove our DOM rather than relying on the
+// page going away cleanly.
+window.addEventListener('pagehide', () => switchTo(null));

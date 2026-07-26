@@ -153,6 +153,31 @@ The following is a responsibility map, not a final code scaffold:
 
 The content script should treat every main-world message and every backend response as untrusted input: check the message source, a project-specific event name, video identity, field types, cue ordering, and payload size before using the data.
 
+#### As implemented in Phase 3
+
+| Module (`extension/src/`) | Responsibility |
+| --- | --- |
+| `content.ts` | Phase 0 watch-page/video-ID detection (unchanged) **plus** the single place a `VideoSession` is created or disposed. |
+| `session.ts` | One `VideoSession` per video, owning the control, track, overlay, job controller, and every timer. |
+| `subtitleControl.ts` / `controlState.ts` | The in-player button and its eight states; presentation logic is pure and unit-tested. |
+| `backendClient.ts` / `apiTypes.ts` | Typed client plus runtime validation of every backend response. |
+| `jobController.ts` | Job creation, cursor polling, dedup, reconciliation, backoff. |
+| `subtitleTrack.ts` | Hidden `<track>`/VTTCue timing; `cuechange` -> active text. |
+| `overlay.ts` | The right-to-left overlay; `textContent` only. |
+| `messages.ts` | The content-script <-> service-worker contract. |
+| `background.ts` | Stateless broker: inject the Phase 0 extractor for `sender.tab.id`, or forward one HTTP request. |
+
+**Backend calls are proxied through the service worker.** An MV3 content
+script's `fetch` is bound by the *page's* CORS context, so calling the backend
+from a YouTube page would arrive with `Origin: https://www.youtube.com` and
+force the backend's allowlist to include a public site. The worker holds the
+extension origin plus `host_permissions`, and stays stateless because MV3
+terminates idle workers — a polling loop there would silently stop.
+
+The untrusted-input rule above is honoured in both directions: `apiTypes.ts`
+validates every backend response field-by-field, dropping any cue that could not
+become a safe VTTCue rather than repairing it.
+
 ### Other runtime components
 
 - **FastAPI application —** exposes the small local API and coordinates job lifecycle. *(Phase 2a: implemented as `api/app.py` + `api/routes.py`; job lifecycle is Phase 2b-2.)*
@@ -673,6 +698,28 @@ The preferred renderer separates synchronization from presentation. A TextTrack 
 
 **Fallback:** If cuechange behavior is unreliable, a requestAnimationFrame or timeupdate-driven lookup may be evaluated as a narrow renderer fallback. It is not the preferred design and must not be implemented preemptively.
 
+### Phase 3 result (implemented 2026-07-26; gate pending)
+
+The preferred approach above was implemented unchanged, with two specifics
+worth recording:
+
+- **A removable `<track>` element, not `video.addTextTrack()`.** Tracks created
+  by `addTextTrack()` cannot be removed — there is no `removeTextTrack` API —
+  and YouTube reuses the same `<video>` element across SPA navigations, so that
+  approach leaks one orphan track per video watched. Removing the element
+  removes the track with it.
+- **The overlay is mounted inside `#movie_player`**, the element YouTube makes
+  fullscreen, so fullscreen and theater mode need no handling and percentage
+  layout makes a resize listener unnecessary. `pointer-events: none` keeps the
+  full-width overlay from swallowing clicks meant for play/pause.
+
+The `cuechange` fallback was **not** needed: a real-Chromium harness confirms
+cues activating from the media clock and the visible line advancing with
+playback. Overlapping cues resolve deterministically (latest start, then higher
+cue index) rather than by DOM order.
+
+Ads, font-size preferences, condensation, and resize tuning remain Phase 4.
+
 ## 10. Data Flow
 
 ```text
@@ -988,6 +1035,14 @@ This initial log captures current implementation choices. Status must be updated
 | No cancellation endpoint, no retention policy | A job whose viewer navigated away finishes and populates the cache, which is the useful outcome for a personal tool. The database grows by roughly one row per translated video. | Current decision (2026-07-25); revisit only on evidence |
 | Extension owns `cue_index` | The backend preserves and echoes client cue indexes exactly and never renumbers, so the extension can map results back to its captured cues. | Current decision (2026-07-25) |
 | FastAPI as an optional `[api]` extra | Keeps the Phase 1 engine and its tests free of required third-party dependencies; the engine suite still runs when the extra is absent. | Current decision (2026-07-25) |
+| Backend calls proxied through the MV3 service worker | An MV3 content script's fetch is bound by the page's CORS context and would send `Origin: https://www.youtube.com`. The worker holds the extension origin and host permissions, and stays stateless because MV3 terminates idle workers. | Current decision (Phase 3, 2026-07-26) |
+| One `VideoSession` owns the active-video lifecycle | Control, track, overlay, job controller, and timers die together; `dispose()` is synchronous so sessions can never overlap. | Current decision (Phase 3, 2026-07-26) |
+| Three stale-state guards: disposed flag, AbortController, response identity | The identity check — comparing `video_id` inside each response with the session's own — is what actually prevents cross-video contamination. | Current decision (Phase 3, 2026-07-26) |
+| Removable `<track>` element instead of `addTextTrack()` | `addTextTrack()` tracks cannot be removed and accumulate on YouTube's reused `<video>` across navigations. | Current decision (Phase 3, 2026-07-26) |
+| Cue dedup by `cue_index`, independent of the polling cursor | The cursor is an optimisation; the dedup set is the guarantee. One cursor-less read on a terminal status reconciles late cues. | Current decision (Phase 3, 2026-07-26) |
+| Translation starts only on explicit user click | Only a health check runs automatically. No capture, job, or provider spend without the user asking. | Current decision (Phase 3, 2026-07-26) |
+| One single-entry IIFE build per extension entry | A multi-entry build emitted `import` statements for a shared module; MV3 content scripts are classic scripts, so that stops the content script loading entirely. | Current decision (Phase 3, 2026-07-26) |
+| YouTube's native captions left untouched | Auto-disabling requires driving undocumented player internals. English CC may overlap the Persian overlay; the user turns it off. | Current decision (Phase 3, 2026-07-26); revisit in Phase 4 |
 | TypeScript extension | Improves contract and lifecycle safety in a changing browser integration. | Current decision |
 | Browser-side caption capture | Uses the active YouTube session and avoids backend scraping or cookie handling. | Boundary decided; method validated (Phase 0, owner-validated 2026-07-22): main-world json3 fetch. |
 | TextTrack synchronization | Delegates cue activation to the media clock while allowing a custom Persian overlay. | Current decision; validate in Phase 3 |
